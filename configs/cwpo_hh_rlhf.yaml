@@ -1,0 +1,34 @@
+# CWPO — HH-RLHF experiment
+defaults:
+  - base
+
+method: cwpo
+dataset_name: hh_rlhf
+labeled_ratio: 0.3
+
+weak_model_name: facebook/opt-125m
+# CWPO weak model: backbone + scalar head (reward model style)
+# Qwen2.5-0.5B alternative:
+# weak_model_name: Qwen/Qwen2.5-0.5B
+
+strong_model_name: facebook/opt-1.3b
+# Alternative strong models:
+#   facebook/opt-2.7b
+#   facebook/opt-6.7b
+#   Qwen/Qwen2.5-1.5B
+#   Qwen/Qwen2.5-3B
+
+reward_model:
+  output_dir: outputs/cwpo/hh_rlhf/reward_model
+
+sft:
+  output_dir: outputs/cwpo/hh_rlhf/sft_strong
+  num_train_epochs: 1
+
+training:
+  output_dir: outputs/cwpo/hh_rlhf/strong_model
+  beta: 0.1
+
+weak_label_output_dir: outputs/cwpo/hh_rlhf/weak_labels
+
+wandb_run_name: cwpo-hh_rlhf-opt125m-opt1.3b

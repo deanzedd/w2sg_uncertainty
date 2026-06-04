@@ -1,0 +1,30 @@
+# WDPO — HH-RLHF experiment
+# Inherits from base.yaml, overrides experiment-specific fields
+# Usage: python pipeline/run_pipeline.py --config configs/wdpo_hh_rlhf.yaml
+
+defaults:
+  - base
+
+method: wdpo
+dataset_name: hh_rlhf
+labeled_ratio: 0.3
+
+weak_model_name: facebook/opt-125m
+strong_model_name: facebook/opt-1.3b
+# To run with other strong models, change strong_model_name:
+#   facebook/opt-2.7b
+#   facebook/opt-6.7b
+#   Qwen/Qwen2.5-1.5B
+#   Qwen/Qwen2.5-3B
+
+sft:
+  output_dir: outputs/wdpo/hh_rlhf/sft_strong
+  num_train_epochs: 1
+
+training:
+  output_dir: outputs/wdpo/hh_rlhf/strong_model
+  beta: 0.1
+
+weak_label_output_dir: outputs/wdpo/hh_rlhf/weak_labels
+
+wandb_run_name: wdpo-hh_rlhf-opt125m-opt1.3b

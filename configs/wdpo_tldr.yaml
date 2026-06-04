@@ -1,0 +1,21 @@
+# WDPO — Reddit TL;DR experiment
+defaults:
+  - base
+
+method: wdpo
+dataset_name: tldr
+labeled_ratio: 0.3
+
+weak_model_name: facebook/opt-125m
+strong_model_name: facebook/opt-1.3b
+
+sft:
+  output_dir: outputs/wdpo/tldr/sft_strong
+
+training:
+  output_dir: outputs/wdpo/tldr/strong_model
+  beta: 0.1
+
+weak_label_output_dir: outputs/wdpo/tldr/weak_labels
+
+wandb_run_name: wdpo-tldr-opt125m-opt1.3b

@@ -1,0 +1,18 @@
+# Baseline DPO — Reddit TL;DR
+defaults:
+  - base
+
+method: baseline_dpo
+dataset_name: tldr
+labeled_ratio: 0.3
+
+strong_model_name: facebook/opt-1.3b
+
+sft:
+  output_dir: outputs/baseline_dpo/tldr/sft_strong
+
+training:
+  output_dir: outputs/baseline_dpo/tldr/strong_model
+  beta: 0.1
+
+wandb_run_name: baseline-dpo-tldr-opt1.3b

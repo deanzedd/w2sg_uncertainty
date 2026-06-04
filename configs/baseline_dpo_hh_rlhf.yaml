@@ -1,0 +1,19 @@
+# Baseline DPO — train strong model only on D_l (no weak labeling)
+# Use this to compare against WDPO and CWPO
+defaults:
+  - base
+
+method: baseline_dpo
+dataset_name: hh_rlhf
+labeled_ratio: 0.3
+
+strong_model_name: facebook/opt-1.3b
+
+sft:
+  output_dir: outputs/baseline_dpo/hh_rlhf/sft_strong
+
+training:
+  output_dir: outputs/baseline_dpo/hh_rlhf/strong_model
+  beta: 0.1
+
+wandb_run_name: baseline-dpo-hh_rlhf-opt1.3b

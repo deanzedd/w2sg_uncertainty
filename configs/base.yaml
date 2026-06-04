@@ -1,0 +1,101 @@
+# =============================================================
+# Base configuration — shared defaults for all experiments
+# Override any field in experiment-specific configs
+# =============================================================
+
+# ── Reproducibility ──────────────────────────────────────────
+seed: 42
+
+# ── Model ────────────────────────────────────────────────────
+weak_model_name: facebook/opt-125m       # weak annotator (LM for WDPO, reward model for CWPO)
+strong_model_name: facebook/opt-1.3b    # strong policy to align
+sft_model_name: null                     # if null, strong_model_name is used as base for DPO
+
+# ── PEFT / LoRA ───────────────────────────────────────────────
+use_lora: false
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules: null               # null = auto-detect (q_proj, v_proj, etc.)
+
+# ── Dataset ───────────────────────────────────────────────────
+dataset_name: hh_rlhf                   # "hh_rlhf" or "tldr"
+labeled_ratio: 0.3                      # fraction of dataset used as D_l (labeled)
+                                        # remaining (1 - labeled_ratio) becomes D_u (unlabeled)
+max_length: 512                         # max token length per sample
+max_prompt_length: 256                  # max prompt length
+
+# ── Weak Labeling ─────────────────────────────────────────────
+method: wdpo                            # "wdpo", "cwpo", or "baseline_dpo"
+weak_label_output_dir: outputs/weak_labels
+beta: 0.1                               # DPO KL coefficient (used in implicit reward)
+
+# ── SFT Training ──────────────────────────────────────────────
+sft:
+  output_dir: outputs/sft
+  num_train_epochs: 1
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-5
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  logging_steps: 50
+  save_steps: 500
+  eval_steps: 500
+  fp16: false
+  bf16: true
+  dataloader_num_workers: 4
+
+# ── Reward Model Training (CWPO weak annotator) ───────────────
+reward_model:
+  output_dir: outputs/reward_model
+  num_train_epochs: 2
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-5
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  logging_steps: 50
+  save_steps: 500
+  fp16: false
+  bf16: true
+
+# ── Strong Model (DPO/WDPO/CWPO) Training ────────────────────
+training:
+  output_dir: outputs/strong_model
+  num_train_epochs: 1
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 5.0e-7
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.0
+  logging_steps: 10
+  save_steps: 200
+  eval_steps: 200
+  fp16: false
+  bf16: true
+  dataloader_num_workers: 4
+  beta: 0.1                             # DPO beta (KL penalty)
+  max_grad_norm: 1.0
+
+# ── Evaluation ────────────────────────────────────────────────
+eval:
+  reward_model_name: OpenAssistant/reward-model-deberta-v3-large-v2  # for GRA
+  gpt4_model: gpt-4o
+  gpt4_max_samples: 500                 # limit GPT-4 eval samples (cost)
+  output_dir: outputs/eval
+
+# ── Logging ───────────────────────────────────────────────────
+wandb_project: w2sg_uncertainty
+wandb_run_name: null                    # null = auto-generated
+use_wandb: true
+
+# ── Paths ─────────────────────────────────────────────────────
+cache_dir: .cache                       # HuggingFace cache
+output_root: outputs
