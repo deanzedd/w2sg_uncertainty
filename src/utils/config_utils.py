@@ -37,11 +37,9 @@ def load_config(config_path: str, overrides: Optional[list] = None) -> DictConfi
 
     # Remove 'defaults' key if present (we handle it manually)
     if "defaults" in exp_cfg:
-        OmegaConf.update(exp_cfg, "defaults", OmegaConf.MISSING, merge=False)
-        exp_cfg = OmegaConf.masked_copy(
-            exp_cfg,
-            [k for k in exp_cfg if k != "defaults"],
-        )
+        exp_dict = OmegaConf.to_container(exp_cfg, resolve=False)
+        exp_dict.pop("defaults", None)
+        exp_cfg = OmegaConf.create(exp_dict)
 
     # Merge: base <- experiment
     cfg = OmegaConf.merge(base_cfg, exp_cfg)

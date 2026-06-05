@@ -121,7 +121,7 @@ def _train_wdpo(cfg, wrapper, ref_model, pseudo_labels_path: str):
         model=wrapper.model,
         ref_model=ref_model,
         args=args,
-        train_dataset=train_dataset,
+        train_dataset=train_dataset.to_hf(),  # trl 1.5.x needs HF Dataset
         processing_class=wrapper.tokenizer,
     )
     trainer.train()
@@ -182,7 +182,7 @@ def _train_baseline_dpo(cfg, wrapper, ref_model):
         model=wrapper.model,
         ref_model=ref_model,
         args=args,
-        train_dataset=train_dataset,
+        train_dataset=train_dataset.to_hf(),  # trl 1.5.x needs HF Dataset
         processing_class=wrapper.tokenizer,
     )
     trainer.train()

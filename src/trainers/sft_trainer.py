@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+import datasets as hf_datasets
 from omegaconf import DictConfig
 from torch.utils.data import Dataset
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
@@ -46,11 +47,42 @@ def build_sft_args(cfg: DictConfig, role: str = "strong") -> SFTConfig:
         fp16=sft_cfg.get("fp16", False),
         bf16=sft_cfg.get("bf16", True),
         dataloader_num_workers=sft_cfg.get("dataloader_num_workers", 4),
-        max_seq_length=cfg.get("max_length", 512),
+        max_length=cfg.get("max_length", 512),
         remove_unused_columns=False,
         report_to="wandb" if cfg.get("use_wandb", True) else "none",
         run_name=cfg.get("wandb_run_name", None),
     )
+
+
+def _to_hf_dataset(dataset: Dataset) -> hf_datasets.Dataset:
+    """
+    Convert a PyTorch Dataset (or our custom BasePreferenceDataset/_SubsetDataset)
+    to a HuggingFace datasets.Dataset.
+
+    trl >= 1.0's SFTTrainer / DPOTrainer heavily rely on HuggingFace Dataset APIs
+    (.map, .filter, .select, .column_names, etc.).  Converting once here avoids
+    patching each missing method individually.
+    """
+    if isinstance(dataset, hf_datasets.Dataset):
+        return dataset
+    samples = [dataset[i] for i in range(len(dataset))]
+    return hf_datasets.Dataset.from_list(samples)
+
+
+def _to_sft_format(hf_ds: hf_datasets.Dataset) -> hf_datasets.Dataset:
+    """
+    Convert a preference dataset {prompt, chosen, rejected} to the SFT format
+    expected by trl >= 1.0: {prompt, completion}.
+
+    trl 1.5.x's SFTTrainer internally looks for example["completion"] during
+    tokenization (sft_trainer.py::tokenize_fn). Using a `formatting_func` conflicts
+    with this pipeline. The correct approach is to supply the data in
+    {prompt, completion} form and let SFTTrainer handle tokenization natively.
+    """
+    def _rename(example):
+        return {"prompt": example["prompt"], "completion": example["chosen"]}
+
+    return hf_ds.map(_rename, remove_columns=hf_ds.column_names)
 
 
 def run_sft(
@@ -59,7 +91,7 @@ def run_sft(
     train_dataset: Dataset,
     args: SFTConfig,
     eval_dataset: Optional[Dataset] = None,
-    formatting_func=None,
+    formatting_func=None,  # kept for API compatibility but no longer used
 ) -> SFTTrainer:
     """
     Run SFT training and return the trained SFTTrainer.
@@ -70,19 +102,27 @@ def run_sft(
         train_dataset:  training data (with 'chosen' field as the target text)
         args:           SFTConfig
         eval_dataset:   optional eval data
-        formatting_func: optional function to format samples into strings
+        formatting_func: DEPRECATED — ignored; trl 1.5.x uses {prompt, completion}
+                         format natively.
     """
-    if formatting_func is None:
-        # Default: use the 'chosen' response as the training target
-        formatting_func = _default_formatting_func
+    # trl >= 1.0 requires HuggingFace datasets.Dataset (needs .map, .column_names, etc.)
+    # Convert our custom PyTorch Dataset to HF Dataset before passing to SFTTrainer.
+    hf_train = _to_hf_dataset(train_dataset)
+    hf_eval  = _to_hf_dataset(eval_dataset) if eval_dataset is not None else None
+
+    # trl 1.5.x SFTTrainer natively expects {prompt, completion} columns.
+    # Map "chosen" → "completion" so trl's internal tokenize_fn can find the field.
+    hf_train = _to_sft_format(hf_train)
+    if hf_eval is not None:
+        hf_eval = _to_sft_format(hf_eval)
 
     trainer = SFTTrainer(
         model=model,
         processing_class=tokenizer,
         args=args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        formatting_func=formatting_func,
+        train_dataset=hf_train,
+        eval_dataset=hf_eval,
+        # No formatting_func: let SFTTrainer use its native {prompt, completion} pipeline
     )
 
     logger.info(f"Starting SFT training... output_dir={args.output_dir}")
@@ -91,10 +131,3 @@ def run_sft(
     logger.info(f"SFT model saved to {args.output_dir}")
     return trainer
 
-
-def _default_formatting_func(sample: dict) -> str:
-    """
-    Format a preference sample for SFT:
-    concatenate prompt + chosen response as the training text.
-    """
-    return sample["prompt"] + " " + sample["chosen"]

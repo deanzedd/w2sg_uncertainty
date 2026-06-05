@@ -8,62 +8,73 @@ No weak labeling involved — used as the comparison baseline.
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-import torch
+import datasets as hf_datasets
 from omegaconf import DictConfig
-from torch.utils.data import Dataset
-from transformers import PreTrainedModel, PreTrainedTokenizerBase
-from trl import DPOConfig, DPOTrainer
+from trl import DPOConfig
 
 logger = logging.getLogger(__name__)
 
 
-class BaselineDPODataset(torch.utils.data.Dataset):
-    """Wraps D_l samples for baseline DPO training."""
+def to_hf_dataset(samples) -> hf_datasets.Dataset:
+    """
+    Convert a list of dicts or a PyTorch Dataset to a HuggingFace Dataset.
+
+    trl >= 1.0's DPOTrainer / SFTTrainer require HuggingFace datasets.Dataset
+    (they call .map(), .filter(), .column_names, etc. internally).
+    """
+    if isinstance(samples, hf_datasets.Dataset):
+        return samples
+    if hasattr(samples, "__len__") and hasattr(samples, "__getitem__") and not isinstance(samples, list):
+        # PyTorch Dataset — iterate and collect
+        records = [samples[i] for i in range(len(samples))]
+    else:
+        records = list(samples)
+
+    # Keep only raw text fields that DPOTrainer needs; drop any pre-tokenized tensors
+    # (trl 1.5.x does its own tokenization from raw text).
+    clean = []
+    for r in records:
+        clean.append({
+            "prompt":   r["prompt"],
+            "chosen":   r["chosen"],
+            "rejected": r["rejected"],
+        })
+    return hf_datasets.Dataset.from_list(clean)
+
+
+class BaselineDPODataset:
+    """
+    Thin wrapper around D_l samples for baseline DPO training.
+
+    trl >= 1.0's DPOTrainer performs its own tokenization from raw text.
+    This class is now just a lightweight container — call `to_hf_dataset()`
+    before passing to DPOTrainer.
+    """
 
     def __init__(
         self,
         samples: List[Dict],
-        tokenizer: PreTrainedTokenizerBase,
+        tokenizer=None,       # kept for API compatibility; no longer used
         max_length: int = 512,
         max_prompt_length: int = 256,
     ) -> None:
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        self.data = [self._tokenize(s) for s in samples]
+        # Store only raw text fields; trl handles tokenization
+        self._data = [
+            {"prompt": s["prompt"], "chosen": s["chosen"], "rejected": s["rejected"]}
+            for s in samples
+        ]
 
     def __len__(self):
-        return len(self.data)
+        return len(self._data)
 
     def __getitem__(self, idx):
-        return self.data[idx]
+        return self._data[idx]
 
-    def _tokenize(self, sample: Dict) -> Dict:
-        prompt = sample["prompt"]
-        chosen = sample["chosen"]
-        rejected = sample["rejected"]
-
-        def _enc(text):
-            return self.tokenizer(
-                text,
-                max_length=self.max_length,
-                truncation=True,
-                padding=False,
-                add_special_tokens=True,
-            )
-
-        return {
-            "prompt": prompt,
-            "chosen": chosen,
-            "rejected": rejected,
-            "chosen_input_ids": _enc(prompt + " " + chosen)["input_ids"],
-            "chosen_attention_mask": _enc(prompt + " " + chosen)["attention_mask"],
-            "rejected_input_ids": _enc(prompt + " " + rejected)["input_ids"],
-            "rejected_attention_mask": _enc(prompt + " " + rejected)["attention_mask"],
-            "prompt_input_ids": _enc(prompt)["input_ids"],
-            "prompt_attention_mask": _enc(prompt)["attention_mask"],
-        }
+    def to_hf(self) -> hf_datasets.Dataset:
+        """Return as a HuggingFace Dataset ready for DPOTrainer."""
+        return hf_datasets.Dataset.from_list(self._data)
 
 
 def build_baseline_dpo_args(cfg: DictConfig) -> DPOConfig:

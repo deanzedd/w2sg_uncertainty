@@ -9,66 +9,46 @@ that the training data is D̂ (weak-labeled) instead of D_l (human-labeled).
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-import torch
+import datasets as hf_datasets
 from omegaconf import DictConfig
-from torch.utils.data import Dataset
-from transformers import PreTrainedModel, PreTrainedTokenizerBase
-from trl import DPOConfig, DPOTrainer
+from trl import DPOConfig
 
 logger = logging.getLogger(__name__)
 
 
-class WDPODataset(torch.utils.data.Dataset):
+class WDPODataset:
     """
     Wraps WDPO pseudo-labeled samples for DPOTrainer.
-    confidence_weight is 1.0 (uniform) for all samples.
+
+    trl >= 1.0's DPOTrainer performs its own tokenization from raw text.
+    This class is now just a lightweight container — call `.to_hf()` or
+    `to_hf_dataset()` before passing to DPOTrainer.
     """
 
     def __init__(
         self,
         samples: List[Dict],
-        tokenizer: PreTrainedTokenizerBase,
+        tokenizer=None,           # kept for API compatibility; no longer used
         max_length: int = 512,
         max_prompt_length: int = 256,
     ) -> None:
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        self.max_prompt_length = max_prompt_length
-        self.data = [self._tokenize(s) for s in samples]
+        # Store only raw text fields; trl handles tokenization
+        self._data = [
+            {"prompt": s["prompt"], "chosen": s["chosen"], "rejected": s["rejected"]}
+            for s in samples
+        ]
 
     def __len__(self) -> int:
-        return len(self.data)
+        return len(self._data)
 
     def __getitem__(self, idx: int) -> Dict:
-        return self.data[idx]
+        return self._data[idx]
 
-    def _tokenize(self, sample: Dict) -> Dict:
-        prompt = sample["prompt"]
-        chosen = sample["chosen"]
-        rejected = sample["rejected"]
-
-        def _enc(text):
-            return self.tokenizer(
-                text,
-                max_length=self.max_length,
-                truncation=True,
-                padding=False,
-                add_special_tokens=True,
-            )
-
-        return {
-            "prompt": prompt,
-            "chosen": chosen,
-            "rejected": rejected,
-            "chosen_input_ids": _enc(prompt + " " + chosen)["input_ids"],
-            "chosen_attention_mask": _enc(prompt + " " + chosen)["attention_mask"],
-            "rejected_input_ids": _enc(prompt + " " + rejected)["input_ids"],
-            "rejected_attention_mask": _enc(prompt + " " + rejected)["attention_mask"],
-            "prompt_input_ids": _enc(prompt)["input_ids"],
-            "prompt_attention_mask": _enc(prompt)["attention_mask"],
-        }
+    def to_hf(self) -> hf_datasets.Dataset:
+        """Return as a HuggingFace Dataset ready for DPOTrainer."""
+        return hf_datasets.Dataset.from_list(self._data)
 
 
 def build_wdpo_training_args(cfg: DictConfig) -> DPOConfig:

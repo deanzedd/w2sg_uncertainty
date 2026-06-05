@@ -91,6 +91,13 @@ class BasePreferenceDataset(ABC, Dataset):
     def __getitem__(self, idx: int) -> PreferenceSample:
         return self.samples[idx]
 
+    @property
+    def column_names(self) -> List[str]:
+        """Expose column names so trl >= 1.0's SFTTrainer can introspect the dataset."""
+        if not self.samples:
+            return ["prompt", "chosen", "rejected"]
+        return list(self.samples[0].keys())
+
     # ------------------------------------------------------------------ #
     #  Labeled / Unlabeled split                                          #
     # ------------------------------------------------------------------ #
@@ -143,3 +150,8 @@ class _SubsetDataset(Dataset):
 
     def __getitem__(self, idx: int) -> PreferenceSample:
         return self._parent.samples[self._indices[idx]]
+
+    @property
+    def column_names(self) -> List[str]:
+        """Expose column names so trl >= 1.0's SFTTrainer can introspect the dataset."""
+        return self._parent.column_names
