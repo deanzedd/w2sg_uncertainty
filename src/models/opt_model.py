@@ -12,6 +12,11 @@ Supports the full OPT family:
 
 OPT-specific quirk: the tokenizer uses EOS as the padding token
 (already handled in BaseModelWrapper._fix_tokenizer).
+
+Multi-GPU support:
+  Set `device_map: auto` in config to shard the model across all GPUs.
+  For small OPT models (≤1.3B) on 10GB GPUs, single-card (device_map: null)
+  is fine. For OPT-6.7B+ you need device_map: auto.
 """
 
 from __future__ import annotations
@@ -46,16 +51,27 @@ class OPTModelWrapper(BaseModelWrapper):
         cache_dir = self.cfg.get("cache_dir", None)
         dtype = torch.bfloat16 if self.cfg.get("bf16", True) else torch.float32
 
+        # ── Multi-GPU device_map (via BaseModelWrapper helper) ────────────
+        # null  → single GPU (default for small OPT models)
+        # "auto"→ shard across all available GPUs (needed for OPT-6.7B+)
+        device_map = self._resolve_device_map(self.cfg)
+
         tokenizer = AutoTokenizer.from_pretrained(
             self._model_name,
             cache_dir=cache_dir,
             use_fast=True,
         )
 
-        model = AutoModelForCausalLM.from_pretrained(
-            self._model_name,
+        load_kwargs = dict(
             cache_dir=cache_dir,
             torch_dtype=dtype,
+        )
+        if device_map is not None:
+            load_kwargs["device_map"] = device_map
+
+        model = AutoModelForCausalLM.from_pretrained(
+            self._model_name,
+            **load_kwargs,
         )
 
         return model, tokenizer

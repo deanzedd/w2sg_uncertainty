@@ -1,0 +1,42 @@
+# Baseline DPO — UltraFeedback Binarized (UFB) experiment
+# Inherits from base.yaml, overrides experiment-specific fields
+# Usage: python pipeline/run_pipeline.py --config configs/baseline_dpo_ufb.yaml
+
+defaults:
+  - base
+
+method: baseline_dpo
+dataset_name: ufb
+labeled_ratio: 1.0                      # Baseline uses the full dataset D (no D_l/D_u split)
+
+weak_model_name: facebook/opt-125m      # not used in baseline, kept for compatibility
+strong_model_name: facebook/opt-2.7b
+
+# ── Multi-GPU ──────────────────────────────────────────────
+device_map: null
+
+# ── Phase 1a: SFT Strong Model on full D ───────────────────
+# UFB has longer sequences → smaller batch
+sft:
+  output_dir: outputs/baseline_dpo/ufb/sft_strong
+  num_train_epochs: 1
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 8        # effective batch = 2×8 = 16
+  learning_rate: 1.0e-5
+  gradient_checkpointing: false
+
+# ── Phase 3: Standard DPO on full D ────────────────────────
+training:
+  output_dir: outputs/baseline_dpo/ufb/strong_model
+  num_train_epochs: 5
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 5.0e-5
+  beta: 0.1
+  gradient_checkpointing: false
+
+# UFB has longer sequences: override max_length to 2048
+max_length: 2048
+max_prompt_length: 1024
+
+wandb_run_name: baseline-dpo-ufb-opt2.7b

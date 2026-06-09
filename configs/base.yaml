@@ -13,10 +13,31 @@ sft_model_name: null                     # if null, strong_model_name is used as
 
 # ── PEFT / LoRA ───────────────────────────────────────────────
 use_lora: false
-lora_r: 16
-lora_alpha: 32
+lora_r: 8
+lora_alpha: 16
 lora_dropout: 0.05
 lora_target_modules: null               # null = auto-detect (q_proj, v_proj, etc.)
+
+# ── Multi-GPU / Memory ────────────────────────────────────────
+# device_map controls how the model is distributed across GPUs:
+#   null      → single GPU (default, Trainer moves model to cuda:0)
+#   "auto"    → HuggingFace automatically shards across all GPUs by free VRAM
+#               REQUIRED for large models (7B+) on 10GB-per-card machines
+#   "balanced"→ equal sharding across all GPUs
+#
+# 4× RTX 3080 (10 GB each) guidelines:
+#   OPT-125m / 350m / 1.3b / 2.7b  → device_map: null
+#   OPT-6.7b / 13b                  → device_map: auto
+#   Qwen2.5-0.5B / 1.5B / 3B       → device_map: null
+#   Qwen2.5-7B / 14B                → device_map: auto
+#
+# NOTE: When use_lora=true, device_map is forced to "auto" automatically
+#       (PEFT requires it for multi-GPU gradient checkpointing).
+device_map: null                        # override in experiment configs for large models
+
+# gradient_checkpointing: trades compute for VRAM (~30-40% VRAM reduction)
+# Recommended when using large models or small GPU VRAM.
+gradient_checkpointing: false           # override per section (sft / training) below
 
 # ── Dataset ───────────────────────────────────────────────────
 dataset_name: hh_rlhf                   # "hh_rlhf" or "tldr"
@@ -30,14 +51,16 @@ method: wdpo                            # "wdpo", "cwpo", or "baseline_dpo"
 weak_label_output_dir: outputs/weak_labels
 beta: 0.1                               # DPO KL coefficient (used in implicit reward)
 
-# ── SFT Training ──────────────────────────────────────────────
-sft:
-  output_dir: outputs/sft
-  num_train_epochs: 1
+# ── Weak Model Training (WDPO Option A) ───────────────────────
+# For WDPO: the weak model is SFT-ed then DPO-trained on D_l
+# to create π_w^* used for implicit reward scoring.
+weak_model_sft:
+  output_dir: outputs/weak_model/sft
+  num_train_epochs: 1                   # 1 epoch for WDPO weak model SFT
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 4
-  gradient_accumulation_steps: 4
-  learning_rate: 2.0e-5
+  gradient_accumulation_steps: 4       # effective batch = 4*4=16 per spec
+  learning_rate: 1.0e-5                # 1e-5 per spec
   lr_scheduler_type: cosine
   warmup_ratio: 0.1
   weight_decay: 0.01
@@ -47,6 +70,47 @@ sft:
   fp16: false
   bf16: true
   dataloader_num_workers: 4
+  gradient_checkpointing: false
+
+weak_model_dpo:
+  output_dir: outputs/weak_model/dpo
+  num_train_epochs: 1
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 5.0e-5                # 5e-5 for standard DPO per spec
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.0
+  logging_steps: 10
+  save_steps: 200
+  eval_steps: 200
+  fp16: false
+  bf16: true
+  beta: 0.1                            # standard DPO beta per spec
+  max_grad_norm: 1.0
+  gradient_checkpointing: false
+  lora_r: 8
+  lora_alpha: 16
+
+# ── SFT Training (Strong Model) ────────────────────────────────
+sft:
+  output_dir: outputs/sft
+  num_train_epochs: 1                   # 1 epoch for WDPO; 3 for CWPO (set in experiment config)
+  per_device_train_batch_size: 4        # 16 target, but default 4 for >7B OOM; grad_accum handles it
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4       # 4*4=16 effective batch per spec
+  learning_rate: 1.0e-5                # 1e-5 per spec
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  logging_steps: 50
+  save_steps: 500
+  eval_steps: 500
+  fp16: false
+  bf16: true
+  dataloader_num_workers: 4
+  gradient_checkpointing: false         # set true when device_map: auto or large models
 
 # ── Reward Model Training (CWPO weak annotator) ───────────────
 reward_model:
@@ -67,11 +131,11 @@ reward_model:
 # ── Strong Model (DPO/WDPO/CWPO) Training ────────────────────
 training:
   output_dir: outputs/strong_model
-  num_train_epochs: 1
-  per_device_train_batch_size: 2
-  per_device_eval_batch_size: 2
-  gradient_accumulation_steps: 8
-  learning_rate: 5.0e-7
+  num_train_epochs: 1                   # up to 5; override per experiment
+  per_device_train_batch_size: 4        # 16 target; grad_accum handles OOM for >7B
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4       # effective batch=16 per spec
+  learning_rate: 5.0e-5                # 5e-5 for WDPO standard DPO; 5e-6 for CWPO (set in exp cfg)
   lr_scheduler_type: cosine
   warmup_ratio: 0.1
   weight_decay: 0.0
@@ -81,8 +145,11 @@ training:
   fp16: false
   bf16: true
   dataloader_num_workers: 4
-  beta: 0.1                             # DPO beta (KL penalty)
+  beta: 0.1                             # DPO beta (KL penalty); 0.5 for CWPO (set in exp cfg)
   max_grad_norm: 1.0
+  gradient_checkpointing: false         # set true when device_map: auto or large models
+  lora_r: 8
+  lora_alpha: 16
 
 # ── Evaluation ────────────────────────────────────────────────
 eval:

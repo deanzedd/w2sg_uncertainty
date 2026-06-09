@@ -7,14 +7,53 @@ dataset_name: tldr
 labeled_ratio: 0.3
 
 weak_model_name: facebook/opt-125m
-strong_model_name: facebook/opt-1.3b
+strong_model_name: facebook/opt-2.7b
+# Alternative strong models:
+#   facebook/opt-2.7b        → device_map: null (single GPU, ~5GB)
+#   facebook/opt-6.7b        → device_map: auto (multi-GPU)
+#   Qwen/Qwen2.5-1.5B        → device_map: null
+#   Qwen/Qwen2.5-3B          → device_map: null
+#   Qwen/Qwen2.5-7B          → device_map: auto (multi-GPU, needs 4×10GB)
+
+# ── Multi-GPU ──────────────────────────────────────────────────────────────
+# Change to: device_map: auto  when using Qwen2.5-7B or OPT-6.7b+
+device_map: null
+
+# ── WDPO Weak Model: SFT → DPO on D_l ─────────────────────
+weak_model_sft:
+  output_dir: outputs/wdpo/tldr/weak_model_sft
+  num_train_epochs: 1                   # SFT weak model: 1 epoch per WDPO spec
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 1        # effective 16
+  learning_rate: 1.0e-5
+  gradient_checkpointing: false
+
+weak_model_dpo:
+  output_dir: outputs/wdpo/tldr/weak_model_dpo
+  num_train_epochs: 1
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 1
+  learning_rate: 5.0e-5                 # 5e-5 for standard DPO per spec
+  beta: 0.1                             # standard DPO beta
+  gradient_checkpointing: false
 
 sft:
   output_dir: outputs/wdpo/tldr/sft_strong
+  num_train_epochs: 1                   # 1 epoch for WDPO per spec
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 1
+  learning_rate: 1.0e-5
+  gradient_checkpointing: false  
+
 
 training:
   output_dir: outputs/wdpo/tldr/strong_model
-  beta: 0.1
+  num_train_epochs: 5
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 1
+  learning_rate: 5.0e-5                 # 5e-5 for WDPO standard DPO per spec
+  beta: 0.1                             # standard DPO beta per spec
+  gradient_checkpointing: false          # set true when device_map: auto
 
 weak_label_output_dir: outputs/wdpo/tldr/weak_labels
 

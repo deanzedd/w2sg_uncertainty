@@ -14,6 +14,19 @@ Supports the full Qwen2.5 family:
   ...
 
 Note: Qwen2.5 tokenizers already have a pad_token; no fix needed.
+
+Multi-GPU support:
+  Set `device_map: auto` in config to automatically shard the model across
+  all available GPUs (model parallelism). This is the recommended approach
+  for large models (7B+) on multi-GPU machines with limited VRAM per card.
+
+  For 4× RTX 3080 (10 GB each):
+    Qwen2.5-0.5B / 1.5B / 3B  → device_map: null  (single GPU, fits in 10GB)
+    Qwen2.5-7B                 → device_map: auto  (shards across 4 GPUs)
+    Qwen2.5-14B                → device_map: auto  (shards across 4 GPUs)
+
+  When using LoRA (use_lora: true), device_map defaults to "auto" automatically
+  because PEFT requires it for multi-GPU gradient checkpointing.
 """
 
 from __future__ import annotations
@@ -48,6 +61,12 @@ class Qwen25ModelWrapper(BaseModelWrapper):
         cache_dir = self.cfg.get("cache_dir", None)
         dtype = torch.bfloat16 if self.cfg.get("bf16", True) else torch.float32
 
+        # ── Multi-GPU device_map (via BaseModelWrapper helper) ────────────
+        # null   → single GPU  (default; fine for ≤3B models on 10GB GPU)
+        # "auto" → shard model across all available GPUs (needed for 7B+)
+        # When use_lora=True, defaults to "auto" automatically.
+        device_map = self._resolve_device_map(self.cfg)
+
         tokenizer = AutoTokenizer.from_pretrained(
             self._model_name,
             cache_dir=cache_dir,
@@ -55,11 +74,17 @@ class Qwen25ModelWrapper(BaseModelWrapper):
             trust_remote_code=True,
         )
 
-        model = AutoModelForCausalLM.from_pretrained(
-            self._model_name,
+        load_kwargs = dict(
             cache_dir=cache_dir,
             torch_dtype=dtype,
             trust_remote_code=True,
+        )
+        if device_map is not None:
+            load_kwargs["device_map"] = device_map
+
+        model = AutoModelForCausalLM.from_pretrained(
+            self._model_name,
+            **load_kwargs,
         )
 
         return model, tokenizer
