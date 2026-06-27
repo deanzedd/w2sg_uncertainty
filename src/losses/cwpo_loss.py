@@ -80,4 +80,4 @@ def compute_confidence_from_scores(
         confidence: (batch,) in [0, 1)
     """
     diff = score_chosen - score_rejected
-    return (2.0 * (torch.sigmoid(diff) - 0.5)).clamp(min=0.0)
+    return (2.0 * (torch.sigmoid(diff) - 0.5)).clamp(min=0.0, max=1.0)

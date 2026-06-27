@@ -125,8 +125,8 @@ def main():
     )
     reward_model_path = args.reward_model_path or os.path.join(
         cfg.reward_model.get("output_dir", f"outputs/{method}/reward_model"),
-        "checkpoint-final", "model.pt",
-    )
+        "checkpoint-final",   # R2/RT2 fix: pass directory, not model.pt file
+    )                         # label_weak.py detects model.pt + metadata.json inside
     weak_model_path = (
         args.weak_model_path
         or cfg.get("weak_model_dpo", {}).get("output_dir", f"outputs/{method}/weak_model_dpo")

@@ -9,7 +9,10 @@ import os
 import sys
 from typing import Optional
 
-import wandb
+# LU1 fix: do NOT import wandb at module level.
+# If wandb is not installed and use_wandb=False, a top-level import crashes
+# any script that imports this module — even those that never call init_wandb().
+# Import is deferred into init_wandb() and finish_wandb() instead.
 from omegaconf import DictConfig, OmegaConf
 from rich.logging import RichHandler
 
@@ -51,6 +54,9 @@ def init_wandb(cfg: DictConfig, tags: Optional[list] = None) -> None:
     if not cfg.get("use_wandb", True):
         return
 
+    # LU1 fix: lazy import so wandb not installed doesn't crash non-wandb runs
+    import wandb  # noqa: PLC0415
+
     run_name = cfg.get("wandb_run_name", None)
     project = cfg.get("wandb_project", "w2sg_uncertainty")
 
@@ -68,6 +74,7 @@ def init_wandb(cfg: DictConfig, tags: Optional[list] = None) -> None:
 def finish_wandb() -> None:
     """Finish the WandB run."""
     try:
+        import wandb  # noqa: PLC0415
         wandb.finish()
     except Exception:
         pass

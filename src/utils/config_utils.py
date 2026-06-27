@@ -27,7 +27,25 @@ def load_config(config_path: str, overrides: Optional[list] = None) -> DictConfi
     """
     config_path = Path(config_path)
     if not config_path.is_absolute():
-        config_path = _CONFIGS_DIR / config_path
+        # CU1 fix: only prepend _CONFIGS_DIR if the path doesn't already
+        # resolve from the current working directory.
+        #
+        # Use-cases handled correctly:
+        #   (a) "--config configs/cwpo_hh_rlhf.yaml"  → exists at CWD → use as-is
+        #   (b) "--config cwpo_hh_rlhf.yaml"           → not at CWD → prepend _CONFIGS_DIR
+        #   (c) "--config /abs/path/to/config.yaml"    → absolute → skip this block
+        #
+        # Previous behaviour prepended unconditionally, turning (a) into
+        # "configs/configs/cwpo_hh_rlhf.yaml" which does not exist.
+        if not config_path.exists():
+            config_path = _CONFIGS_DIR / config_path
+
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"Config file not found: {config_path}\n"
+            f"  Searched relative to CWD and in configs/ directory.\n"
+            f"  Available configs: {[p.name for p in _CONFIGS_DIR.glob('*.yaml')]}"
+        )
 
     # Load base config
     base_cfg = OmegaConf.load(_CONFIGS_DIR / "base.yaml")

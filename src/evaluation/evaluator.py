@@ -44,25 +44,45 @@ class Evaluator:
         sft_model_path: str,
         cfg: DictConfig,
         device: str = "cuda",
+        device_map: Optional[str] = None,
     ) -> None:
         self.cfg = cfg
         self.device = device
         self.eval_cfg = cfg.eval
 
+        # EV1 fix: support device_map for large models (7B+) to avoid OOM.
+        # With device_map="auto", HF shards model layers across all available GPUs.
+        # With device_map=None (default), model is loaded entirely on `device`.
+        # .to(device) is only called when NOT using device_map (can conflict with sharding).
+        _load_kwargs: dict = {"torch_dtype": torch.bfloat16}
+        if device_map is not None:
+            _load_kwargs["device_map"] = device_map
+
         logger.info(f"Loading aligned model from {aligned_model_path}")
         self.aligned_model = AutoModelForCausalLM.from_pretrained(
-            aligned_model_path, torch_dtype=torch.bfloat16
-        ).to(device).eval()
+            aligned_model_path, **_load_kwargs
+        )
+        if device_map is None:
+            self.aligned_model = self.aligned_model.to(device)
+        self.aligned_model.eval()
 
         logger.info(f"Loading SFT model from {sft_model_path}")
         self.sft_model = AutoModelForCausalLM.from_pretrained(
-            sft_model_path, torch_dtype=torch.bfloat16
-        ).to(device).eval()
+            sft_model_path, **_load_kwargs
+        )
+        if device_map is None:
+            self.sft_model = self.sft_model.to(device)
+        self.sft_model.eval()
 
         # Use the aligned model's tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(aligned_model_path)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        # EV3 fix: left-padding is the standard for batched generation.
+        # With right-padding, the model sees padding AFTER the prompt, which
+        # can confuse EOS detection and produce truncated / blank responses.
+        self.tokenizer.padding_side = "left"
+
 
     def run(
         self,
@@ -179,10 +199,19 @@ class Evaluator:
                 eos_token_id=self.tokenizer.eos_token_id,
             )
 
-            # Decode only the new tokens (exclude prompt)
-            prompt_len = enc["input_ids"].shape[1]
+            # EV3 fix: decode per-sample using the padded input length.
+            #
+            # With left-padded inputs (padding_side="left"), the generate() output
+            # has shape (batch_size, padded_input_len + max_new_tokens).
+            # New tokens are appended starting at exactly padded_input_len (= shape[1])
+            # for ALL samples in the batch, regardless of individual prompt lengths.
+            #
+            # Using enc["input_ids"].shape[1] (padded batch length) is correct.
+            # Per-sample attention_mask.sum() would be WRONG here because it gives
+            # the number of non-pad tokens, not the position where new tokens start.
+            padded_input_len = enc["input_ids"].shape[1]
             for out in outputs:
-                new_tokens = out[prompt_len:]
+                new_tokens = out[padded_input_len:]
                 text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
                 responses.append(text.strip())
 

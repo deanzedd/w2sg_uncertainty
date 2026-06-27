@@ -41,8 +41,12 @@ _DATASET_ID = "Anthropic/hh-rlhf"
 # Marker used by the dataset to delimit the final assistant turn
 _ASSISTANT_TOKEN = "\n\nAssistant:"
 
-# Paper spec: filter out samples with more than 512 tokens
-_MAX_TOKENS_HH = 512
+# Paper spec: filter out samples with more than 512 tokens.
+# H1 fix: word-count proxy (str.split()) undercounts actual tokens for
+# HH-RLHF dialogues by ~10-30% due to special tokens and punctuation.
+# Tighten threshold to 400 words (~20% safety margin) to avoid samples
+# that exceed 512 actual tokens after tokenization.
+_MAX_TOKENS_HH = 400
 
 # Subset name → HuggingFace data_dir argument
 _SUBSET_MAP = {
@@ -83,7 +87,10 @@ class HHRLHFDataset(BasePreferenceDataset):
         }
 
     Filtering: samples whose total (prompt + chosen + rejected) word count
-    exceeds ``max_length`` (default 512 per paper spec) are dropped.
+    exceeds ``max_length`` (default 400 per H1 fix — tightened from paper's
+    512 to compensate for the word-count proxy undercounting special tokens)
+    are dropped. The actual tokenizer truncation is still applied by the
+    trainer via max_length.
     """
 
     def __init__(

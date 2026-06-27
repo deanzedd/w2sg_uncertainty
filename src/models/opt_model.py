@@ -49,7 +49,10 @@ class OPTModelWrapper(BaseModelWrapper):
         self,
     ) -> Tuple[PreTrainedModel, PreTrainedTokenizerBase]:
         cache_dir = self.cfg.get("cache_dir", None)
-        dtype = torch.bfloat16 if self.cfg.get("bf16", True) else torch.float32
+        # O1 fix: use _resolve_dtype() which reads from section configs
+        # (sft.bf16, training.bf16) instead of always defaulting to bfloat16
+        # from the top-level config.
+        dtype = self._resolve_dtype(self.cfg)
 
         # ── Multi-GPU device_map (via BaseModelWrapper helper) ────────────
         # null  → single GPU (default for small OPT models)

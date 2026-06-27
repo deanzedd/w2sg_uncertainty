@@ -73,7 +73,10 @@ class BaseWeakLabeler(ABC):
         """Save pseudo-labeled dataset to a JSON Lines file."""
         import json
         import os
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # BL1 fix: os.path.dirname("bare.jsonl") == "" and os.makedirs("") raises
+        # FileNotFoundError. Guard to only call makedirs when there IS a directory.
+        if d := os.path.dirname(path):
+            os.makedirs(d, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             for s in samples:
                 f.write(json.dumps(s, ensure_ascii=False) + "\n")

@@ -23,7 +23,7 @@ device_map: null
 weak_model_sft:
   output_dir: outputs/wdpo/tldr/weak_model_sft
   num_train_epochs: 1                   # SFT weak model: 1 epoch per WDPO spec
-  per_device_train_batch_size: 4
+  per_device_train_batch_size: 2
   gradient_accumulation_steps: 1        # effective 16
   learning_rate: 1.0e-5
   gradient_checkpointing: false
@@ -31,7 +31,7 @@ weak_model_sft:
 weak_model_dpo:
   output_dir: outputs/wdpo/tldr/weak_model_dpo
   num_train_epochs: 1
-  per_device_train_batch_size: 4
+  per_device_train_batch_size: 1
   gradient_accumulation_steps: 1
   learning_rate: 5.0e-5                 # 5e-5 for standard DPO per spec
   beta: 0.1                             # standard DPO beta
@@ -40,7 +40,7 @@ weak_model_dpo:
 sft:
   output_dir: outputs/wdpo/tldr/sft_strong
   num_train_epochs: 1                   # 1 epoch for WDPO per spec
-  per_device_train_batch_size: 4
+  per_device_train_batch_size: 3
   gradient_accumulation_steps: 1
   learning_rate: 1.0e-5
   gradient_checkpointing: false  
@@ -49,7 +49,7 @@ sft:
 training:
   output_dir: outputs/wdpo/tldr/strong_model
   num_train_epochs: 5
-  per_device_train_batch_size: 4
+  per_device_train_batch_size: 1
   gradient_accumulation_steps: 1
   learning_rate: 5.0e-5                 # 5e-5 for WDPO standard DPO per spec
   beta: 0.1                             # standard DPO beta per spec

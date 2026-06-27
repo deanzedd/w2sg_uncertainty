@@ -130,7 +130,11 @@ class DPORewardLabeler(BaseWeakLabeler):
         """
         Compute DPO implicit reward:
             r_w(x, y) = β · (log π_w(y|x) − log π_ref(y|x))
+
+        Prompt is fed to the model for context (causal LM requires full sequence),
+        but only response token log-probs are summed — matching log π(y|x).
         """
+        # Tokenize full sequence (prompt + response) — model needs full context
         full_text = prompt + " " + response
         enc = self.tokenizer(
             full_text,
@@ -140,23 +144,86 @@ class DPORewardLabeler(BaseWeakLabeler):
             padding=False,
         ).to(self.device)
 
-        # Log prob under weak model
-        weak_logp = self._sequence_log_prob(self.weak_model, enc)
-        ref_logp = self._sequence_log_prob(self.ref_model, enc)
+        # WL1 fix: compute prompt_len via token ID matching instead of
+        # tokenizing prompt separately (which can be off-by-one due to
+        # BOS token and separator whitespace handling differences).
+        prompt_len = self._get_prompt_len(prompt, enc)
+
+        # Compute log π(y|x) for both models (only response tokens)
+        weak_logp = self._sequence_log_prob(self.weak_model, enc, prompt_len)
+        ref_logp  = self._sequence_log_prob(self.ref_model,  enc, prompt_len)
 
         return self.beta * (weak_logp - ref_logp).item()
+
+    def _get_prompt_len(self, prompt: str, full_enc: dict) -> int:
+        """
+        WL1 fix: Compute the number of prompt tokens in the full tokenized sequence
+        by matching token IDs, not by tokenizing the prompt separately.
+
+        Problem with the old approach:
+          tokenize(prompt, add_special_tokens=True)  → [BOS, t1, ..., tN]
+          tokenize(prompt + " " + response, ...)      → [BOS, t1, ..., tN, ..., tR]
+          The " " separator can cause the tokenizer to merge the space into
+          the last prompt token or the first response token differently,
+          making the lengths differ by ±1.
+
+        Fix:
+          Tokenize the prompt alone (no separator), then match its IDs as a
+          prefix of the full sequence. This finds the exact boundary where
+          prompt tokens end in the full tokenized sequence.
+
+        Args:
+            prompt:   raw prompt string
+            full_enc: tokenized {input_ids, attention_mask} of (prompt + " " + response)
+
+        Returns:
+            Number of prompt tokens in full_enc["input_ids"]
+        """
+        prompt_enc = self.tokenizer(
+            prompt,
+            add_special_tokens=True,
+            truncation=False,
+            return_tensors="pt",
+            padding=False,
+        )
+        prompt_ids = prompt_enc["input_ids"][0].tolist()  # list of ints
+        full_ids   = full_enc["input_ids"][0].tolist()    # list of ints
+
+        # Find the longest matching prefix between prompt_ids and full_ids
+        match_len = 0
+        for i, (p, f) in enumerate(zip(prompt_ids, full_ids)):
+            if p == f:
+                match_len = i + 1
+            else:
+                break  # first mismatch → stop
+
+        # Fallback: if no match at all (edge case), use prompt token count
+        return match_len if match_len > 0 else len(prompt_ids)
 
     @staticmethod
     def _sequence_log_prob(
         model: PreTrainedModel,
         enc: dict,
+        prompt_len: int = 0,
     ) -> torch.Tensor:
         """
-        Compute sum of token log-probabilities for a sequence.
-        Returns a scalar tensor.
+        Compute sum of response token log-probabilities: log π(y|x).
+
+        The full sequence (prompt + response) is fed to the model so that
+        the causal LM has proper context. However, only response token
+        positions are included in the sum — prompt positions are zeroed out.
+
+        Args:
+            model:      causal LM (π_w or π_ref)
+            enc:        tokenized full sequence {input_ids, attention_mask}
+            prompt_len: number of prompt tokens; positions 0..prompt_len-2
+                        (after the shift) are masked out.
+
+        Returns:
+            scalar tensor — sum of log-probs over response tokens only
         """
-        input_ids = enc["input_ids"]
-        attention_mask = enc["attention_mask"]
+        input_ids      = enc["input_ids"]       # (1, L)
+        attention_mask = enc["attention_mask"]  # (1, L)
 
         with torch.no_grad():
             outputs = model(
@@ -164,16 +231,31 @@ class DPORewardLabeler(BaseWeakLabeler):
                 attention_mask=attention_mask,
             )
 
-        logits = outputs.logits  # (1, L, V)
-        # Shift: predict token t+1
-        logits = logits[:, :-1, :]       # (1, L-1, V)
-        labels = input_ids[:, 1:]        # (1, L-1)
+        # Shift: position i predicts token i+1
+        # After shift: index j in token_logps corresponds to predicting token j+1
+        logits = outputs.logits[:, :-1, :]   # (1, L-1, V)
+        labels = input_ids[:, 1:]            # (1, L-1)
 
-        log_probs = F.log_softmax(logits, dim=-1)
+        log_probs   = F.log_softmax(logits, dim=-1)
         token_logps = torch.gather(
             log_probs, dim=2, index=labels.unsqueeze(2)
         ).squeeze(2)  # (1, L-1)
 
-        # Mask prompt tokens — only sum over response tokens
-        # (simplified: sum all tokens; can be refined to mask prompt)
+        # Zero out prompt token positions.
+        # After the shift, predicting token at position j uses index j-1.
+        # Prompt tokens occupy indices 0..prompt_len-1 in the original sequence.
+        # Their predictions land at shifted indices 0..prompt_len-2.
+        # Response tokens start at shifted index prompt_len-1.
+        #
+        # WL2 fix: old condition was `if prompt_len > 1`, which skipped masking
+        # for prompt_len=0 (no BOS at all) and prompt_len=1 (only BOS).
+        # For prompt_len=0: nothing to mask ([:max(0,-1)] = [:0] → no-op). OK.
+        # For prompt_len=1: old code didn't mask either — but there is a BOS token
+        # at shifted index 0 that predicts token 1 (first response token). The BOS
+        # prediction itself (index 0 after shift) should be excluded → mask [:0] → no-op.
+        # This means prompt_len=1 (BOS only) is actually correct with either condition.
+        # The real fix: make the masking unconditional to handle edge cases uniformly.
+        if prompt_len > 0:
+            token_logps[:, : max(0, prompt_len - 1)] = 0.0
+
         return token_logps.sum()

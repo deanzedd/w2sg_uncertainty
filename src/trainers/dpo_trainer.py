@@ -14,6 +14,8 @@ import datasets as hf_datasets
 from omegaconf import DictConfig
 from trl import DPOConfig
 
+from .sft_trainer import _detect_precision
+
 logger = logging.getLogger(__name__)
 
 
@@ -80,20 +82,26 @@ class BaselineDPODataset:
 def build_baseline_dpo_args(cfg: DictConfig) -> DPOConfig:
     """Build DPOConfig for baseline DPO."""
     train_cfg = cfg.training
+    # DT2 fix: use _detect_precision(cfg.training) to validate bf16 GPU support
+    # instead of directly reading train_cfg.get("bf16") without checking GPU capability.
+    # Consistent with sft_trainer.py and wdpo_trainer.py approach.
+    fp16, bf16 = _detect_precision(cfg.training)
     return DPOConfig(
         output_dir=train_cfg.get("output_dir", "outputs/baseline_dpo"),
         num_train_epochs=train_cfg.get("num_train_epochs", 1),
         per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 2),
         per_device_eval_batch_size=train_cfg.get("per_device_eval_batch_size", 2),
         gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 8),
-        learning_rate=float(train_cfg.get("learning_rate", 5e-7)),
+        # DT1 fix: default 5e-7 was 10x lower than the WDPO spec (5e-5).
+        # Stalled training when config key is missing. Changed to 5e-5.
+        learning_rate=float(train_cfg.get("learning_rate", 5e-5)),
         lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
         warmup_ratio=train_cfg.get("warmup_ratio", 0.1),
         weight_decay=train_cfg.get("weight_decay", 0.0),
         logging_steps=train_cfg.get("logging_steps", 10),
         save_steps=train_cfg.get("save_steps", 200),
-        fp16=train_cfg.get("fp16", False),
-        bf16=train_cfg.get("bf16", True),
+        fp16=fp16,
+        bf16=bf16,
         beta=float(train_cfg.get("beta", 0.1)),
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
         remove_unused_columns=False,

@@ -113,6 +113,15 @@ class BasePreferenceDataset(ABC, Dataset):
         if self.split != "train":
             raise ValueError("D_l / D_u split is only meaningful for split='train'.")
 
+        # D3 fix: labeled_ratio=0.0 would yield max(1, 0)=1 — silently using
+        # 1 sample as labeled when the caller expected 0. Raise explicitly.
+        if self.labeled_ratio == 0.0:
+            raise ValueError(
+                "labeled_ratio=0.0 is not allowed — it would silently use 1 sample "
+                "as labeled (due to max(1, ...)). Use a small positive value instead "
+                "or handle the fully-unsupervised case separately."
+            )
+
         indices = list(range(len(self.samples)))
         rng = random.Random(self.seed)
         rng.shuffle(indices)

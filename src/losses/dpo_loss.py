@@ -14,8 +14,12 @@ where:
 
 from __future__ import annotations
 
+import logging
+
 import torch
 import torch.nn.functional as F
+
+logger = logging.getLogger(__name__)
 
 
 def compute_log_probs(
@@ -41,6 +45,17 @@ def compute_log_probs(
     # Mask padding / prompt tokens
     loss_mask = labels != -100
 
+    # L1 fix: clamp(min=1) silently hides the case where a sample has no
+    # response tokens at all (loss_mask all-False). Log a warning so the caller
+    # is aware — this typically indicates a tokenization/data issue.
+    zero_response_rows = (loss_mask.sum(dim=-1) == 0)
+    if zero_response_rows.any():
+        logger.warning(
+            f"L1: {zero_response_rows.sum().item()} sample(s) in the batch have "
+            "no response tokens (loss_mask all-False). Their log-prob contribution "
+            "will be 0.0 due to clamp(min=1). Check tokenization / label masking."
+        )
+
     # Replace -100 with 0 for gather (won't affect masked positions)
     labels[labels == -100] = 0
 
@@ -50,7 +65,7 @@ def compute_log_probs(
         log_probs, dim=2, index=labels.unsqueeze(2)
     ).squeeze(2)  # (B, L-1)
 
-    per_token_logps = per_token_logps * loss_mask
+    per_token_logps = per_token_logps * loss_mask.float()  # explicit cast: bool * bf16 can be wrong under autocast
 
     if average_log_prob:
         return per_token_logps.sum(dim=-1) / loss_mask.sum(dim=-1).clamp(min=1)

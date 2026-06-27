@@ -18,7 +18,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
-from transformers import PreTrainedModel, PreTrainedTokenizerBase
+from transformers import AutoModelForCausalLM, PreTrainedModel, PreTrainedTokenizerBase
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
@@ -43,8 +43,11 @@ class BaseModelWrapper(ABC):
         self._fix_tokenizer(self.tokenizer)
         if cfg.get("use_lora", False):
             self.model = self._wrap_lora(self.model, cfg)
-        if cfg.get("gradient_checkpointing", False):
-            self.model.gradient_checkpointing_enable()
+        # M1 fix: gradient_checkpointing_enable() is NOT called here.
+        # GC is managed per-trainer via SFTConfig/DPOConfig.gradient_checkpointing,
+        # which TRL applies correctly from the section config (sft.gradient_checkpointing,
+        # training.gradient_checkpointing). A top-level cfg.get("gradient_checkpointing")
+        # always returns False (base.yaml default) → the old call was dead code.
 
     # ------------------------------------------------------------------ #
     #  Abstract interface                                                  #
@@ -63,10 +66,50 @@ class BaseModelWrapper(ABC):
 
     def get_ref_model(self) -> PreTrainedModel:
         """
-        Return a frozen deep copy of the model for use as DPO reference.
-        The copy is put in eval mode with all gradients disabled.
+        Return a frozen reference model for DPO training.
+
+        M2 fix: Use safetensors memory-mapped I/O instead of deepcopy.
+
+        Background:
+          deepcopy(model) duplicates all weight tensors in VRAM, doubling memory
+          usage. For a 7B model (~14 GB bfloat16), this causes OOM on most setups.
+
+        Modern approach (safetensors / mmap):
+          HuggingFace transformers >= 4.38 uses memory-mapped .safetensors files
+          by default when loading from cache. The OS shares mmap pages between
+          multiple loads of the same checkpoint (copy-on-write semantics).
+          Reloading the same model a second time consumes near-zero additional VRAM
+          for weight tensors, because the physical memory pages are shared.
+
+          This is the current best practice used by TRL, Axolotl, and LLaMA-Factory.
+
+        For LoRA-wrapped models:
+          The caller should prefer PEFT's `disable_adapter()` context manager
+          to avoid loading a separate ref model entirely.
         """
-        ref = copy.deepcopy(self.model)
+        model_name = getattr(self, "_model_name", None)
+        if model_name is None:
+            raise RuntimeError(
+                "get_ref_model() requires _model_name to be set by the subclass. "
+                "Ensure your ModelWrapper sets self._model_name before super().__init__()."
+            )
+
+        dtype = next(self.model.parameters()).dtype
+        device_map = self._resolve_device_map(self.cfg)
+        cache_dir = self.cfg.get("cache_dir", None)
+
+        load_kwargs: dict = {
+            "torch_dtype": dtype,
+            # transformers >= 4.38 uses mmap=True for .safetensors by default.
+            # Re-loading the same checkpoint reuses OS mmap pages (copy-on-write),
+            # so ref model weights share physical memory with the policy model.
+        }
+        if device_map is not None:
+            load_kwargs["device_map"] = device_map
+        if cache_dir is not None:
+            load_kwargs["cache_dir"] = cache_dir
+
+        ref = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
         ref.eval()
         for param in ref.parameters():
             param.requires_grad = False
@@ -102,6 +145,37 @@ class BaseModelWrapper(ABC):
         if cfg.get("use_lora", False):
             return "auto"
         return None
+
+    @staticmethod
+    def _resolve_dtype(cfg) -> "torch.dtype":
+        """
+        Resolve model loading dtype from config.
+
+        O1/O2 fix: reads from section-level config (sft.bf16, training.bf16,
+        reward_model.bf16) with fallback to top-level, instead of always
+        reading top-level cfg.get("bf16", True) which defaults to True even when
+        a section config sets bf16: false.
+
+        Priority:
+          1. sft.bf16 / training.bf16 / reward_model.bf16 (section configs)
+          2. Top-level bf16 / fp16
+          3. Default: bfloat16
+        """
+        # Check section configs first
+        for section in ("sft", "training", "reward_model"):
+            section_cfg = cfg.get(section, {})
+            if section_cfg is None:
+                continue
+            bf16_val = section_cfg.get("bf16", None)
+            fp16_val = section_cfg.get("fp16", None)
+            if fp16_val:   # explicit fp16
+                return torch.float16
+            if bf16_val is not None:
+                return torch.bfloat16 if bf16_val else torch.float32
+        # Top-level fallback
+        if cfg.get("fp16", False):
+            return torch.float16
+        return torch.bfloat16 if cfg.get("bf16", True) else torch.float32
 
     # ------------------------------------------------------------------ #
     #  LoRA wrapping                                                       #

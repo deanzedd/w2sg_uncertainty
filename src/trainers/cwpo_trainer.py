@@ -108,10 +108,12 @@ class CWPOTrainer(DPOTrainer):
         We intercept after per_sequence_loss computation and apply confidence weighting:
             loss = weighted_mean(confidence_weights * per_sequence_loss)
         """
-        # Pop confidence_weight that may still be in inputs if compute_loss wasn't called
-        confidence_weights = inputs.pop("confidence_weight", None)
-        if confidence_weights is None:
-            confidence_weights = self._current_confidence_weights
+        # CT2 fix: do NOT pop "confidence_weight" here again.
+        # compute_loss (the public hook called first) already pops it and stashes
+        # it in self._current_confidence_weights. A second pop always returns None
+        # because the key was already removed, making the stash mechanism the only
+        # source of truth. Use the stashed value directly.
+        confidence_weights = self._current_confidence_weights
 
         # Standard TRL processing — but we need to hook into per_sequence_loss
         # We accomplish this by overriding the internals via a monkey-patch context
@@ -145,9 +147,10 @@ class CWPOTrainer(DPOTrainer):
         Returns:
             loss tensor (scalar), or (loss, outputs) if return_outputs=True
         """
-        from trl.trainer.dpo_trainer import selective_log_softmax
-
-        device = model.device if hasattr(model, 'device') else next(model.parameters()).device
+        # ── Device resolution ─────────────────────────────────────────────
+        # CT3 fix: use accelerator.device instead of model.device
+        # (model.device is "meta" or wrong with device_map="auto")
+        device = self.accelerator.device
 
         # ── Build model_kwargs (exclude TRL-internal keys) ────────────────
         _non_model_keys = {"completion_mask", "ref_chosen_logps", "ref_rejected_logps"}
@@ -163,8 +166,18 @@ class CWPOTrainer(DPOTrainer):
         shift_labels = input_ids[..., 1:].contiguous()
         shift_completion_mask = completion_mask[..., 1:].contiguous()
 
-        per_token_logps = selective_log_softmax(shift_logits, shift_labels)
-        per_token_logps[shift_completion_mask == 0] = 0.0
+        # CT1 fix: inline implementation instead of private TRL API
+        # selective_log_softmax from TRL is internal and breaks across versions.
+        # Equivalent: log_softmax then gather the token log-prob.
+        log_probs = F.log_softmax(shift_logits, dim=-1)
+        per_token_logps = log_probs.gather(2, shift_labels.unsqueeze(-1)).squeeze(-1)
+
+        # CT4 fix: use multiplication instead of in-place zeroing.
+        # In-place assignment on a tensor that participates in the autograd graph
+        # raises: "RuntimeError: one of the variables needed for gradient
+        # computation has been modified by an inplace operation".
+        # Multiplying by a float mask is equivalent and autograd-safe.
+        per_token_logps = per_token_logps * shift_completion_mask.float()
         logps = per_token_logps.sum(dim=1)  # (2*batch_size,)
         chosen_logps, rejected_logps = logps.chunk(2, dim=0)
 
@@ -180,8 +193,11 @@ class CWPOTrainer(DPOTrainer):
                     ref_outputs = unwrapped(**model_kwargs)
 
         ref_shift_logits = ref_outputs.logits[..., :-1, :].contiguous()
-        ref_per_token_logps = selective_log_softmax(ref_shift_logits, shift_labels)
-        ref_per_token_logps[shift_completion_mask == 0] = 0.0
+        # Use inline log_softmax (same CT1 fix as above; no gradient needed here)
+        ref_log_probs = F.log_softmax(ref_shift_logits, dim=-1)
+        ref_per_token_logps = ref_log_probs.gather(2, shift_labels.unsqueeze(-1)).squeeze(-1)
+        # Safe to use multiplication here too (inside no_grad, but consistent style)
+        ref_per_token_logps = ref_per_token_logps * shift_completion_mask.float()
         ref_logps = ref_per_token_logps.sum(dim=1)
         ref_chosen_logps, ref_rejected_logps = ref_logps.chunk(2, dim=0)
 
@@ -274,7 +290,9 @@ def build_cwpo_training_args(cfg: DictConfig) -> DPOConfig:
     """
     train_cfg = cfg.training
     use_device_map = cfg.get("device_map", None) == "auto" or cfg.get("use_lora", False)
-    fp16, bf16 = _detect_precision(cfg)
+    # Linked fix (DT2 pattern): use _detect_precision(cfg.training) to validate
+    # bf16 GPU support instead of _detect_precision(cfg) which reads top-level config.
+    fp16, bf16 = _detect_precision(cfg.training)
 
     return DPOConfig(
         output_dir=train_cfg.get("output_dir", "outputs/cwpo"),

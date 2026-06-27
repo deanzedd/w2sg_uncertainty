@@ -181,32 +181,66 @@ def _build_wdpo_labeler(cfg, weak_model_path: str, weak_ref_path: str, device: s
 
 
 def _build_cwpo_labeler(cfg, reward_model_path: str, device: str) -> ConfidenceLabeler:
-    """Build CWPO labeler: load trained scalar reward model."""
+    """Build CWPO labeler: load trained scalar reward model.
+
+    R2/RT2 fix: supports two checkpoint formats:
+      - Checkpoint directory (new):  contains metadata.json + model.pt + tokenizer files
+      - Legacy .pt file path:        state_dict only, falls back to backbone from config
+    """
+    import os
     dtype = torch.bfloat16 if cfg.get("bf16", True) else torch.float32
-    logger.info(f"Loading CWPO reward model backbone: {cfg.weak_model_name}")
-    reward_model, tokenizer = load_reward_model_and_tokenizer(
-        cfg.weak_model_name,
-        cache_dir=cfg.get("cache_dir"),
-        dtype=dtype,
-    )
+
+    # Resolve reward_model_path: may be a directory or a .pt file
+    resolved_checkpoint_dir = None
+    resolved_pt_file = None
 
     if reward_model_path:
-        logger.info(f"Loading trained reward model weights from: {reward_model_path}")
-        state_dict = torch.load(reward_model_path, map_location="cpu")
+        if os.path.isdir(reward_model_path):
+            # New format: checkpoint directory (has metadata.json + model.pt + tokenizer)
+            resolved_checkpoint_dir = reward_model_path
+        elif os.path.isfile(reward_model_path) and reward_model_path.endswith(".pt"):
+            # Legacy format: bare .pt state dict
+            resolved_pt_file = reward_model_path
+    else:
+        # Auto-detect from config: prefer directory over .pt
+        rm_output = cfg.get("reward_model", {}).get("output_dir", "")
+        default_ckpt_dir = os.path.join(rm_output, "checkpoint-final")
+        default_pt = os.path.join(default_ckpt_dir, "model.pt")
+        if os.path.isdir(default_ckpt_dir) and os.path.exists(default_pt):
+            resolved_checkpoint_dir = default_ckpt_dir
+        elif os.path.exists(default_pt):
+            resolved_pt_file = default_pt
+
+    if resolved_checkpoint_dir is not None:
+        # Mode B: load full checkpoint (new format with metadata.json)
+        logger.info(f"Loading CWPO reward model from checkpoint dir: {resolved_checkpoint_dir}")
+        reward_model, tokenizer = load_reward_model_and_tokenizer(
+            cfg.weak_model_name,        # fallback backbone if metadata.json missing
+            cache_dir=cfg.get("cache_dir"),
+            dtype=dtype,
+            checkpoint_path=resolved_checkpoint_dir,
+        )
+    elif resolved_pt_file is not None:
+        # Mode A legacy: load backbone fresh, then apply state dict
+        logger.info(f"Loading CWPO reward model backbone: {cfg.weak_model_name}")
+        logger.info(f"Applying legacy state dict from: {resolved_pt_file}")
+        reward_model, tokenizer = load_reward_model_and_tokenizer(
+            cfg.weak_model_name,
+            cache_dir=cfg.get("cache_dir"),
+            dtype=dtype,
+        )
+        state_dict = torch.load(resolved_pt_file, map_location="cpu")
         reward_model.load_state_dict(state_dict)
     else:
-        # Try to find the final checkpoint from config
-        rm_output = cfg.get("reward_model", {}).get("output_dir", "")
-        default_path = os.path.join(rm_output, "checkpoint-final", "model.pt")
-        if os.path.exists(default_path):
-            logger.info(f"Auto-loading reward model from: {default_path}")
-            state_dict = torch.load(default_path, map_location="cpu")
-            reward_model.load_state_dict(state_dict)
-        else:
-            logger.warning(
-                "No --reward_model_path provided! Using untrained reward model. "
-                "Run train_reward_model.py first."
-            )
+        logger.warning(
+            "No --reward_model_path provided and no checkpoint found! "
+            "Using untrained reward model. Run train_reward_model.py first."
+        )
+        reward_model, tokenizer = load_reward_model_and_tokenizer(
+            cfg.weak_model_name,
+            cache_dir=cfg.get("cache_dir"),
+            dtype=dtype,
+        )
 
     return ConfidenceLabeler(
         reward_model=reward_model,

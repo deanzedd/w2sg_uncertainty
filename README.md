@@ -232,14 +232,14 @@ pip install -r requirements.txt
 
 ```bash
 # WDPO: OPT-125M (weak) → OPT-1.3B (strong), không LoRA
-python pipeline/run_pipeline.py --config configs/wdpo_hh_rlhf.yaml
+python pipeline/run_pipeline.py --config wdpo_hh_rlhf.yaml
 
 # WDPO với LoRA rank=8 (khuyến nghị cho model lớn)
-python pipeline/run_pipeline.py --config configs/wdpo_hh_rlhf.yaml \
+python pipeline/run_pipeline.py --config wdpo_hh_rlhf.yaml \
     use_lora=true lora_r=8 lora_alpha=16
 
 # WDPO với Qwen2.5-7B strong model + LoRA rank=8 + multi-GPU
-python pipeline/run_pipeline.py --config configs/wdpo_hh_rlhf.yaml \
+python pipeline/run_pipeline.py --config wdpo_hh_rlhf.yaml \
     strong_model_name=Qwen/Qwen2.5-7B \
     use_lora=true lora_r=8 lora_alpha=16 \
     sft.gradient_checkpointing=true

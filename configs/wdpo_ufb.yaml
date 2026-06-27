@@ -29,7 +29,7 @@ weak_model_sft:
   output_dir: outputs/wdpo/ufb/weak_model_sft
   num_train_epochs: 1
   per_device_train_batch_size: 2
-  gradient_accumulation_steps: 8        # effective batch = 2×8 = 16
+  gradient_accumulation_steps: 1        # effective batch = 2×8 = 16
   learning_rate: 1.0e-5
   gradient_checkpointing: false
 
@@ -37,7 +37,7 @@ weak_model_dpo:
   output_dir: outputs/wdpo/ufb/weak_model_dpo
   num_train_epochs: 1
   per_device_train_batch_size: 2
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 1
   learning_rate: 5.0e-5
   beta: 0.1
   gradient_checkpointing: false
@@ -47,7 +47,7 @@ sft:
   output_dir: outputs/wdpo/ufb/sft_strong
   num_train_epochs: 1
   per_device_train_batch_size: 2
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 1
   learning_rate: 1.0e-5
   gradient_checkpointing: false
 
@@ -56,7 +56,7 @@ training:
   output_dir: outputs/wdpo/ufb/strong_model
   num_train_epochs: 5
   per_device_train_batch_size: 2
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 1
   learning_rate: 5.0e-5
   beta: 0.1
   gradient_checkpointing: false

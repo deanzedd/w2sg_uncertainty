@@ -25,9 +25,23 @@ def tokenize_preference_sample(
     tokenizer: PreTrainedTokenizerBase,
     max_length: int = 512,
     max_prompt_length: int = 256,
+    separator: str = "\n",
 ) -> Dict[str, Any]:
     """
     Tokenize a preference sample into the format expected by DPOTrainer.
+
+    Args:
+        sample:           dict with 'prompt', 'chosen', 'rejected'
+        tokenizer:        HuggingFace tokenizer
+        max_length:       max total sequence length
+        max_prompt_length: max prompt length
+        separator:        DU3 fix — string inserted between prompt and response.
+                          Default '\\n' is appropriate for both OPT and Qwen.
+                          The old default ' ' (space) caused subtle tokenization
+                          boundary issues: the space sometimes merged into the
+                          last prompt token or first response token differently
+                          than when the model sees prompt + response in context,
+                          degrading DPO label quality.
 
     Returns a dict with:
         prompt_input_ids, prompt_attention_mask,
@@ -48,14 +62,14 @@ def tokenize_preference_sample(
 
     # Tokenize full sequences (prompt + response) for loss computation
     chosen_full = tokenizer(
-        prompt + " " + chosen,
+        prompt + separator + chosen,
         max_length=max_length,
         truncation=True,
         padding=False,
         add_special_tokens=True,
     )
     rejected_full = tokenizer(
-        prompt + " " + rejected,
+        prompt + separator + rejected,
         max_length=max_length,
         truncation=True,
         padding=False,
@@ -79,20 +93,24 @@ def tokenize_for_reward_model(
     sample: Dict[str, str],
     tokenizer: PreTrainedTokenizerBase,
     max_length: int = 512,
+    separator: str = "\n",
 ) -> Dict[str, Any]:
     """
     Tokenize a preference sample for reward model training.
     Returns chosen and rejected encodings separately.
+
+    Args:
+        separator: DU3 fix — see tokenize_preference_sample docstring.
     """
     chosen_enc = tokenizer(
-        sample["prompt"] + " " + sample["chosen"],
+        sample["prompt"] + separator + sample["chosen"],
         max_length=max_length,
         truncation=True,
         padding=False,
         add_special_tokens=True,
     )
     rejected_enc = tokenizer(
-        sample["prompt"] + " " + sample["rejected"],
+        sample["prompt"] + separator + sample["rejected"],
         max_length=max_length,
         truncation=True,
         padding=False,
@@ -192,6 +210,13 @@ def _pad_sequences(
     max_length: int,
 ) -> tuple:
     """Right-pad a list of sequences to the same length."""
+    # DU1 fix: max() on an empty sequence raises ValueError.
+    # Return empty tensors when ids_list is empty (e.g. empty batch).
+    if not ids_list:
+        return (
+            torch.zeros((0, 0), dtype=torch.long),
+            torch.zeros((0, 0), dtype=torch.long),
+        )
     max_len = min(max(len(s) for s in ids_list), max_length)
     padded_ids = []
     padded_masks = []

@@ -105,7 +105,9 @@ class GPT4Evaluator:
                 time.sleep(self.sleep_sec)
 
         if output_path:
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            # G1 fix: os.path.dirname of a bare filename is "", guard against it
+            if d := os.path.dirname(output_path):
+                os.makedirs(d, exist_ok=True)
             with open(output_path, "w") as f:
                 json.dump(results, f, indent=2, ensure_ascii=False)
             logger.info(f"GPT-4 raw results saved to {output_path}")
@@ -141,6 +143,16 @@ class GPT4Evaluator:
                 max_tokens=256,
             )
             content = completion.choices[0].message.content.strip()
+            # G2 fix: GPT-4 sometimes wraps JSON in markdown fences (```json ... ```).
+            # json.loads would fail on the fence characters, causing silent 5/5 default.
+            # Strip leading/trailing fence lines before parsing.
+            if content.startswith("```"):
+                lines = content.splitlines()
+                # Drop first line (```json or ```) and last line (```)
+                content = "\n".join(
+                    line for line in lines
+                    if not line.strip().startswith("```")
+                ).strip()
             parsed = json.loads(content)
             return {
                 "score_a": float(parsed.get("score_a", 5)),

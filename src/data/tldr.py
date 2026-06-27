@@ -45,8 +45,11 @@ _SPLIT_MAP = {
     "test":       "test",
 }
 
-# Paper spec: filter out samples with more than 1024 tokens
-_MAX_TOKENS_TLDR = 1024
+# Paper spec: filter out samples with more than 1024 tokens.
+# T2 fix: word-count proxy (str.split()) undercounts actual tokens for
+# Reddit TL;DR posts by ~10-20% due to URLs, formatting, and special tokens.
+# Tighten threshold to 850 words (~17% safety margin).
+_MAX_TOKENS_TLDR = 850
 
 
 def _word_count(text: str) -> int:
@@ -61,7 +64,8 @@ class TLDRDataset(BasePreferenceDataset):
     Paper spec:
       - 123,169 samples retained after filtering (max_length=1024)
       - ~5% held out for validation (the "valid1" split in CarperAI mirror)
-      - Samples with more than 1024 tokens are filtered out
+      - T2 fix: word-count threshold tightened to 850 words (from 1024) to
+        compensate for the proxy undercounting Reddit post formatting/special tokens.
 
     Uses the CarperAI/openai_summarize_comparisons mirror (Parquet) because
     the original `openai/summarize_from_feedback` dataset relies on a legacy

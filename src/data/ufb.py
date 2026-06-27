@@ -10,9 +10,16 @@ Paper spec (prompt.txt §2):
   - Binarization: highest-scored completion → "chosen";
     one of remaining 3 randomly selected → "rejected"
   - Training set: 61.1k samples
-  - Test set: 2k samples
+  - Test set: 2k samples (test_prefs)
   - Filter out samples with MORE THAN 2048 tokens
   - Training split is randomly divided: 30% → D_l, 70% → D_u
+
+U1 fix — Validation / Test split:
+  test_prefs (2,000 samples) is split 70 / 30:
+    validation → test_prefs[:70%]  ≈ 1,400 samples  (for eval during training)
+    test       → test_prefs[70%:]  ≈   600 samples  (held-out final evaluation)
+  This avoids leaking test data into training-time validation metrics.
+  HuggingFace datasets slice syntax is deterministic and reproducible.
 
 HuggingFace Hub schema for "HuggingFaceH4/ultrafeedback_binarized":
   - prompt          : str   — the instruction / question
@@ -40,12 +47,16 @@ from .base_dataset import BasePreferenceDataset, PreferenceSample
 _DATASET_ID = "HuggingFaceH4/ultrafeedback_binarized"
 
 # HuggingFaceH4/ultrafeedback_binarized split names
-# train_prefs  → 61,135 samples  (paper: 61.1k)
-# test_prefs   → 2,000  samples  (paper: 2k)
+# train_prefs        → 61,135 samples  (paper: 61.1k)
+# test_prefs[:70%]   →  1,400 samples  (validation — for eval during training)
+# test_prefs[70%:]   →    600 samples  (test       — held-out final evaluation)
+#
+# U1 fix: previously both "validation" and "test" pointed to "test_prefs",
+# leaking test data into training-time eval metrics. Split 70/30 to fix.
 _SPLIT_MAP = {
     "train":      "train_prefs",
-    "test":       "test_prefs",
-    "validation": "test_prefs",  # no separate val; use test as proxy
+    "validation": "test_prefs[:70%]",   # ≈1,400 samples — eval during training
+    "test":       "test_prefs[70%:]",   # ≈  600 samples — held-out final eval
 }
 
 # Paper spec: filter out samples with more than 2048 tokens
@@ -77,11 +88,11 @@ def _extract_content(messages: Any) -> str:
         if isinstance(msg, dict) and msg.get("role") == "assistant":
             return str(msg.get("content", "")).strip()
 
-    # Fallback: return content of last element
-    if messages:
-        last = messages[-1]
-        if isinstance(last, dict):
-            return str(last.get("content", "")).strip()
+    # U2 fix: do NOT fall back to messages[-1].
+    # If no assistant turn exists, messages[-1] could be a user/system turn,
+    # which would incorrectly use the user query as the "response".
+    # Returning "" causes preprocess_sample() to skip this sample via:
+    #   if not chosen or not rejected: return None
     return ""
 
 

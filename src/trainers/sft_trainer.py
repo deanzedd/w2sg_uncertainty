@@ -93,7 +93,9 @@ def build_sft_args(cfg: DictConfig, role: str = "strong") -> SFTConfig:
     use_device_map = cfg.get("device_map", None) == "auto" or cfg.get("use_lora", False)
 
     # Auto-detect precision: handles faulty GPU 0 / no CUDA / bf16 unsupported
-    fp16, bf16 = _detect_precision(cfg)
+    # ST1 fix: pass cfg.sft (section config) not full cfg, so _detect_precision
+    # reads sft.bf16 / sft.fp16 correctly instead of top-level defaults.
+    fp16, bf16 = _detect_precision(cfg.sft)
     logger.info(f"Training precision: fp16={fp16}, bf16={bf16}")
 
     return SFTConfig(

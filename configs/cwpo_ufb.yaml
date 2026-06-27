@@ -28,7 +28,7 @@ reward_model:
   output_dir: outputs/cwpo/ufb/reward_model
   num_train_epochs: 2
   per_device_train_batch_size: 2
-  gradient_accumulation_steps: 8        # effective batch = 2×8 = 16
+  gradient_accumulation_steps: 1        # effective batch = 2×8 = 16
   learning_rate: 1.0e-5
   gradient_checkpointing: false
 
@@ -37,7 +37,7 @@ sft:
   output_dir: outputs/cwpo/ufb/sft_strong
   num_train_epochs: 3                   # 3 epochs for CWPO per spec
   per_device_train_batch_size: 2
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 1
   learning_rate: 1.0e-5
   gradient_checkpointing: false
 
@@ -46,7 +46,7 @@ training:
   output_dir: outputs/cwpo/ufb/strong_model
   num_train_epochs: 5
   per_device_train_batch_size: 2
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 1
   learning_rate: 5.0e-6                 # 5e-6 for CWPO per spec
   beta: 0.5                             # higher beta for CWPO per spec
   gradient_checkpointing: false

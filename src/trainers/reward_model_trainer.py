@@ -47,11 +47,16 @@ class RewardModelTrainer:
         tokenizer,
         cfg: DictConfig,
         device: str = "cuda",
+        backbone_name: Optional[str] = None,
     ) -> None:
         self.model = model.to(device)
         self.tokenizer = tokenizer
         self.cfg = cfg.reward_model
         self.device = device
+        # R2/RT2 fix: store backbone_name so _save can write metadata.json,
+        # enabling load_reward_model_and_tokenizer to reconstruct the model
+        # standalone from a checkpoint directory.
+        self.backbone_name = backbone_name
 
     def train(
         self,
@@ -184,7 +189,44 @@ class RewardModelTrainer:
         return correct / max(1, total)
 
     def _save(self, output_dir: str, step) -> None:
+        """
+        R2/RT2 fix: Save full checkpoint — state dict + tokenizer + metadata.
+
+        Saves to: output_dir/checkpoint-{step}/
+            - model.pt           : ScalarRewardModel state_dict (weights)
+            - tokenizer_*        : tokenizer files via save_pretrained()
+            - metadata.json      : backbone_name, scalar_head config for
+                                   standalone reconstruction
+
+        This allows load_reward_model_and_tokenizer() to load the checkpoint
+        from the directory path without needing external backbone_name.
+        """
+        import json
         save_path = os.path.join(output_dir, f"checkpoint-{step}")
         os.makedirs(save_path, exist_ok=True)
-        torch.save(self.model.state_dict(), os.path.join(save_path, "model.pt"))
-        logger.info(f"Saved reward model checkpoint to {save_path}")
+
+        # 1. Save model weights (state dict)
+        weights_path = os.path.join(save_path, "model.pt")
+        torch.save(self.model.state_dict(), weights_path)
+
+        # 2. Save tokenizer (captures any pad_token / vocab modifications)
+        try:
+            self.tokenizer.save_pretrained(save_path)
+        except Exception as e:
+            logger.warning(f"Could not save tokenizer: {e}")
+
+        # 3. Save metadata for standalone checkpoint loading
+        hidden_size = self.model.backbone.config.hidden_size
+        metadata = {
+            "backbone_name": self.backbone_name,
+            "hidden_size": hidden_size,
+            "step": str(step),
+        }
+        metadata_path = os.path.join(save_path, "metadata.json")
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        logger.info(
+            f"Saved reward model checkpoint to {save_path} "
+            f"(model.pt + tokenizer + metadata.json)"
+        )

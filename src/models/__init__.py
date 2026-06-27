@@ -29,7 +29,10 @@ def get_model_wrapper(model_name: str, cfg, **kwargs) -> BaseModelWrapper:
     # Match by prefix to handle variants not explicitly listed
     wrapper_cls = None
     for key, cls in MODEL_REGISTRY.items():
-        if model_name.startswith(key) or key.startswith(model_name.split("/")[0]):
+        # MI1 fix: match exactly or model_name starts with key (e.g. "Qwen/Qwen2.5-7B-Instruct"
+        # starts with "Qwen/Qwen2.5-7B"). The old code also checked key.startswith(org_prefix)
+        # which incorrectly matched any facebook/* model to OPTModelWrapper.
+        if model_name == key or model_name.startswith(key):
             wrapper_cls = cls
             break
     if wrapper_cls is None:

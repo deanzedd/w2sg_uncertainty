@@ -90,6 +90,7 @@ def main():
         tokenizer=tokenizer,
         cfg=cfg,
         device=device,
+        backbone_name=cfg.weak_model_name,  # R2/RT2 fix: needed to write metadata.json
     )
     trainer.train(train_dataset=labeled_ds, eval_dataset=eval_ds)
     logger.info("Reward model training complete!")
