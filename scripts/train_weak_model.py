@@ -79,8 +79,8 @@ def _build_weak_dpo_config(cfg: DictConfig) -> DPOConfig:
         warmup_ratio=dpo_cfg.get("warmup_ratio", 0.1),
         weight_decay=dpo_cfg.get("weight_decay", 0.0),
         logging_steps=dpo_cfg.get("logging_steps", 10),
-        save_steps=dpo_cfg.get("save_steps", 200),
-        eval_steps=dpo_cfg.get("eval_steps", 200),
+        save_steps=dpo_cfg.get("save_steps", 500),
+        eval_steps=dpo_cfg.get("eval_steps", 500),
         fp16=fp16,
         bf16=bf16,
         beta=float(dpo_cfg.get("beta", 0.1)),          # 0.1 for standard WDPO DPO

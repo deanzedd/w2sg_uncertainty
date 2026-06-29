@@ -662,3 +662,17 @@ python pipeline/run_pipeline.py --config configs/cwpo_hh_rlhf.yaml \
 
 - **WDPO**: Weak Supervision DPO — weak model labels D_u via implicit reward
 - **CWPO**: Confidence-Weighted PO — `L = E[C(x,y+,y−)·ℓDPO]` where `C = 2·(σ(s+−s−)−0.5)`
+
+
+
+# Đủ nhanh (~40 phút với 500 samples default):
+CUDA_VISIBLE_DEVICES=1,2,3 python scripts/evaluate.py \
+    --config configs/wdpo_hh_rlhf.yaml \
+    --aligned_model_path outputs/wdpo/hh_rlhf/strong_model \
+    --sft_model_path outputs/wdpo/hh_rlhf/sft_strong
+# Nếu muốn override số samples tùy thích:
+CUDA_VISIBLE_DEVICES=1,2,3 python scripts/evaluate.py \
+    --config configs/wdpo_hh_rlhf.yaml \
+    --aligned_model_path outputs/wdpo/hh_rlhf/strong_model \
+    --sft_model_path outputs/wdpo/hh_rlhf/sft_strong \
+    eval.max_gen_samples=200

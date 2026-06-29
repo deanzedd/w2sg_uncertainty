@@ -44,7 +44,9 @@ def parse_args():
                         help="Run GPT-4 win rate evaluation (requires OPENAI_API_KEY)")
     parser.add_argument("--pseudo_labels", type=str, default=None,
                         help="Path to pseudo_labeled.jsonl (for preference accuracy)")
-    parser.add_argument("--max_eval_samples", type=int, default=None)
+    parser.add_argument("--max_eval_samples", type=int, default=None,
+                        help="Số samples tối đa từ test set đưa vào generation "
+                             "(default=500 để tránh chạy vài tiếng, đặt None để dùng toàn bộ)")
     parser.add_argument("overrides", nargs="*")
     return parser.parse_args()
 
@@ -58,6 +60,22 @@ def main():
 
     import torch
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # ── Resolve device_map cho aligned + SFT models ────────────────────────────
+    # eval_device_map trong config được ưu tiên hơn device_map (training)
+    # Vì evaluation load 2 model lớn cùng lúc, cần phân bổ qua nhiều GPU
+    eval_device_map = (
+        cfg.get("eval", {}).get("device_map", None)  # eval.device_map (specific)
+        or cfg.get("device_map", None)               # top-level device_map (training fallback)
+    )
+    # Nếu vẫn None và có nhiều hơn 2 GPU khả dụng → tự dùng "auto" để tránh OOM
+    if eval_device_map is None and torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        logger.info(
+            f"eval_device_map not set but {torch.cuda.device_count()} GPUs available. "
+            "Forcing device_map='auto' for evaluation to avoid OOM."
+        )
+        eval_device_map = "auto"
+    logger.info(f"Evaluator device_map: {eval_device_map}")
 
     # ── Load eval dataset ────────────────────────────────────────────────
     logger.info(f"Loading test dataset: {cfg.dataset_name}")
@@ -92,6 +110,7 @@ def main():
         sft_model_path=args.sft_model_path,
         cfg=cfg,
         device=device,
+        device_map=eval_device_map,
     )
 
     metrics = evaluator.run(

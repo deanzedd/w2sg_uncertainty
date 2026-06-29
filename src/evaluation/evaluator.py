@@ -4,6 +4,10 @@ Unified Evaluator — runs all evaluation metrics in sequence.
 Pipeline:
 1. Generate responses from aligned model and SFT baseline
 2. Compute GRA (Gold Reward Accuracy)
+   - HH-RLHF / UFB  → Skywork/Skywork-Reward-V2-Llama-3.1-8B
+                       (SkyworkChatRewardAdapter, device_map="auto")
+   - TL;DR          → OpenAssistant/reward-model-deberta-v3-large-v2
+                       (ClassificationRewardAdapter, single GPU)
 3. Compute GPT-4 Win Rate (optional, requires API key)
 4. Save all results to output_dir
 """
@@ -23,6 +27,40 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from .metrics import preference_accuracy
 from .reward_model_eval import RewardModelEvaluator
 from .gpt4_eval import GPT4Evaluator
+
+
+# ── Dataset → GRA reward model mapping (paper setting) ───────────────────────
+# HH-RLHF và UFB: dùng Skywork-Reward-V2 (LLM-based, chat template)
+# TL;DR           : dùng OpenAssistant DeBERTa (classification, concat format)
+DATASET_REWARD_MODEL_MAP: dict = {
+    "hh_rlhf": "Skywork/Skywork-Reward-V2-Llama-3.1-8B",
+    "ufb":     "Skywork/Skywork-Reward-V2-Llama-3.1-8B",
+    "tldr":    "OpenAssistant/reward-model-deberta-v3-large-v2",
+}
+
+_DEFAULT_REWARD_MODEL = "OpenAssistant/reward-model-deberta-v3-large-v2"
+
+
+def _select_reward_model(cfg) -> str:
+    """
+    Chọn reward model cho GRA theo thứ tự ưu tiên:
+      1. eval.reward_model_name trong config (nếu user set thủ công)
+      2. DATASET_REWARD_MODEL_MAP theo dataset_name
+      3. Fallback về OpenAssistant DeBERTa
+    """
+    # Ưu tiên override thủ công từ config
+    manual = cfg.get("eval", {}).get("reward_model_name", None)
+    if manual:  # None hoặc chuỗi rỗng → bỏ qua
+        logger.info(f"[GRA] Using manually configured reward model: {manual}")
+        return manual
+
+    # Auto-select theo dataset
+    dataset_name = cfg.get("dataset_name", "")
+    model_name = DATASET_REWARD_MODEL_MAP.get(dataset_name, _DEFAULT_REWARD_MODEL)
+    logger.info(
+        f"[GRA] Auto-selected reward model for dataset='{dataset_name}': {model_name}"
+    )
+    return model_name
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +86,7 @@ class Evaluator:
     ) -> None:
         self.cfg = cfg
         self.device = device
+        self.device_map = device_map  # lưu lại để _generate_responses biết cách move tensors
         self.eval_cfg = cfg.eval
 
         # EV1 fix: support device_map for large models (7B+) to avoid OOM.
@@ -112,11 +151,21 @@ class Evaluator:
         prompts = [s["prompt"] for s in samples]
 
         # ── Step 2: Generate responses ───────────────────────────────────
-        logger.info("Generating responses from aligned model...")
-        aligned_responses = self._generate_responses(self.aligned_model, prompts)
+        # Số samples được giới hạn bởi --max_eval_samples trong evaluate.py (default=500)
+        # gen_batch_size: dùng int() + or-fallback để handle OmegaConf None values
+        gen_batch_size = int(self.eval_cfg.get("gen_batch_size", None) or 4)
+        logger.info(
+            f"Generating responses from aligned model "
+            f"(n={len(prompts)}, batch_size={gen_batch_size})..."
+        )
+        aligned_responses = self._generate_responses(
+            self.aligned_model, prompts, batch_size=gen_batch_size
+        )
 
-        logger.info("Generating responses from SFT model...")
-        sft_responses = self._generate_responses(self.sft_model, prompts)
+        logger.info(f"Generating responses from SFT model (batch_size={gen_batch_size})...")
+        sft_responses = self._generate_responses(
+            self.sft_model, prompts, batch_size=gen_batch_size
+        )
 
         # Save generated responses
         responses_path = os.path.join(output_dir, "generated_responses.json")
@@ -128,12 +177,16 @@ class Evaluator:
             )
 
         # ── Step 3: GRA ──────────────────────────────────────────────────
+        # Auto-select reward model theo dataset (có thể override qua config)
+        gra_model_name = _select_reward_model(self.cfg)
+        gra_device_map = self.eval_cfg.get("gra_device_map", "auto")
+        gra_batch_size = self.eval_cfg.get("gra_batch_size", 8)  # adapter tự điều chỉnh cho Skywork
+
         gra_evaluator = RewardModelEvaluator(
-            reward_model_name=self.eval_cfg.get(
-                "reward_model_name",
-                "OpenAssistant/reward-model-deberta-v3-large-v2",
-            ),
+            reward_model_name=gra_model_name,
             device=self.device,
+            device_map=gra_device_map,
+            batch_size=gra_batch_size,
             cache_dir=self.cfg.get("cache_dir", None),
         )
         gra_metrics = gra_evaluator.compute_gra(
@@ -179,8 +232,17 @@ class Evaluator:
         batch_size: int = 4,
     ) -> List[str]:
         """Generate responses for a list of prompts."""
+        # Khi device_map="auto", model layers nằm trên nhiều GPU khác nhau.
+        # Input tensor phải được move tới device của embedding layer (GPU đầu tiên).
+        # next(model.parameters()).device trả về đúng điều này trong mọi trường hợp.
+        input_device = next(model.parameters()).device
+        n_batches = (len(prompts) + batch_size - 1) // batch_size
         responses = []
-        for i in tqdm(range(0, len(prompts), batch_size), desc="Generating"):
+        for i in tqdm(
+            range(0, len(prompts), batch_size),
+            desc="Generating",
+            total=n_batches,
+        ):
             batch = prompts[i : i + batch_size]
             enc = self.tokenizer(
                 batch,
@@ -188,7 +250,7 @@ class Evaluator:
                 padding=True,
                 truncation=True,
                 max_length=self.cfg.get("max_prompt_length", 256),
-            ).to(self.device)
+            ).to(input_device)  # move tới GPU chứa embedding layer của model
 
             outputs = model.generate(
                 **enc,

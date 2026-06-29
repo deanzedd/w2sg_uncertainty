@@ -153,15 +153,40 @@ training:
 
 # ── Evaluation ────────────────────────────────────────────────
 eval:
-  reward_model_name: OpenAssistant/reward-model-deberta-v3-large-v2  # for GRA
+  # GRA reward model — null = auto-select theo dataset (khuyến nghị, theo paper):
+  #   hh_rlhf / ufb → Skywork/Skywork-Reward-V2-Llama-3.1-8B
+  #   tldr          → OpenAssistant/reward-model-deberta-v3-large-v2
+  # Override thủ công nếu muốn dùng model cụ thể, ví dụ:
+  #   reward_model_name: "Skywork/Skywork-Reward-V2-Qwen3-1.7B"
+  reward_model_name: null
+
+  # device_map cho GRA reward model:
+  #   "auto" = phân bổ tự động qua nhiều GPU (cần thiết cho Skywork-8B ~16GB)
+  #   null   = load trên single GPU (chỉ dùng khi reward model nhỏ như DeBERTa)
+  gra_device_map: auto
+
+  # Batch size cho GRA inference:
+  #   Skywork-8B: tự động ép xuống 1 nếu dùng default (8)
+  #   DeBERTa: 8 là hợp lý
+  gra_batch_size: 8
+
   gpt4_model: gpt-4o
   gpt4_max_samples: 500                 # limit GPT-4 eval samples (cost)
   output_dir: outputs/eval
 
+  # Giới hạn số samples dùng để generate responses (aligned + SFT)
+  # 500 là hợp lý và đủ độ tin cậy thống kê cho GRA metric
+  # Đặt null để dùng toàn bộ test set (có thể mất vài giờ với 1000+ samples)
+  max_gen_samples: null
+
+  # Batch size khi generate responses (aligned + SFT models)
+  # Tăng lên nếu VRAM còn dư sau khi load 2 model, giảm xuống 1 nếu OOM
+  gen_batch_size: 16 #4
+
 # ── Logging ───────────────────────────────────────────────────
 wandb_project: w2sg_uncertainty
 wandb_run_name: null                    # null = auto-generated
-use_wandb: true
+use_wandb: false # true
 
 # ── Paths ─────────────────────────────────────────────────────
 cache_dir: .cache                       # HuggingFace cache
