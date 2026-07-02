@@ -92,18 +92,19 @@ def build_baseline_dpo_args(cfg: DictConfig) -> DPOConfig:
         per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 2),
         per_device_eval_batch_size=train_cfg.get("per_device_eval_batch_size", 2),
         gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 8),
-        # DT1 fix: default 5e-7 was 10x lower than the WDPO spec (5e-5).
-        # Stalled training when config key is missing. Changed to 5e-5.
-        learning_rate=float(train_cfg.get("learning_rate", 5e-5)),
+        learning_rate=float(train_cfg.get("learning_rate", 5e-6)),  # 5e-6 per spec (Bảng 8)
         lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
         warmup_ratio=train_cfg.get("warmup_ratio", 0.1),
-        weight_decay=train_cfg.get("weight_decay", 0.0),
+        warmup_steps=train_cfg.get("warmup_steps", 0),  # 100 per spec; overrides warmup_ratio when > 0
+        weight_decay=train_cfg.get("weight_decay", 0.05),  # 0.05 per spec
+        optim=train_cfg.get("optim", "paged_adamw_32bit"),  # paged adamw 32bit per spec
         logging_steps=train_cfg.get("logging_steps", 10),
         save_steps=train_cfg.get("save_steps", 200),
         fp16=fp16,
         bf16=bf16,
-        beta=float(train_cfg.get("beta", 0.1)),
+        beta=float(train_cfg.get("beta", 0.5)),           # 0.5 per spec (Bảng 8)
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
+        gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),  # True per spec
         remove_unused_columns=False,
         report_to="wandb" if cfg.get("use_wandb", True) else "none",
         run_name=cfg.get("wandb_run_name", None),

@@ -62,6 +62,14 @@ def parse_args():
                         help="Path to SFT checkpoint to initialize strong model from")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--max_steps", type=int, default=None)
+    parser.add_argument(
+        "--resume_dpo_checkpoint", type=str, default=None,
+        help="Path to a DPO checkpoint directory to resume strong model training from "
+             "(e.g. outputs/baseline_dpo/hh_rlhf/strong_model/checkpoint-20200). "
+             "When set, model weights are loaded from this checkpoint (not --sft_model_path). "
+             "HF Trainer also restores optimizer/scheduler state and skips completed steps. "
+             "Works for all methods: baseline_dpo, wdpo, cwpo.",
+    )
     parser.add_argument("overrides", nargs="*")
     return parser.parse_args()
 
@@ -83,19 +91,39 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     method = cfg.get("method", "wdpo")
 
-    # ── Load strong model (from SFT checkpoint or base model) ────────────
+    # ── Load strong model (from SFT checkpoint or base model) ──────────────
+    # NOTE: When resuming a LoRA DPO checkpoint, we still load the base model
+    # and tokenizer from sft_model_path / cfg.strong_model_name, NOT from the
+    # resume checkpoint.  This is because LoRA checkpoints saved by PEFT only
+    # contain the adapter weights (adapter_model.safetensors) and no tokenizer
+    # files — loading AutoTokenizer from a bare adapter directory fails.
+    #
+    # The correct LoRA resume flow:
+    #   1. Load base model + tokenizer from sft_model_path (has all HF files)
+    #   2. _wrap_lora() applies a fresh LoRA config on top
+    #   3. trainer.train(resume_from_checkpoint=...) tells HF Trainer to:
+    #        a. Re-load the adapter weights from the checkpoint directory
+    #        b. Restore optimizer / scheduler state
+    #        c. Skip the steps already completed
     model_name = args.sft_model_path or cfg.strong_model_name
-    logger.info(f"Loading strong model: {model_name}")
+    if args.resume_dpo_checkpoint:
+        logger.info(
+            f"Resume mode: base model loaded from '{model_name}', "
+            f"adapter + optimizer state will be restored from checkpoint: "
+            f"{args.resume_dpo_checkpoint}"
+        )
+    else:
+        logger.info(f"Loading strong model: {model_name}")
     wrapper = get_model_wrapper(model_name, cfg)
     ref_model = wrapper.get_ref_model()
 
     # ── Dispatch to training method ──────────────────────────────────────
     if method == "wdpo":
-        _train_wdpo(cfg, wrapper, ref_model, args.pseudo_labels)
+        _train_wdpo(cfg, wrapper, ref_model, args.pseudo_labels, args.resume_dpo_checkpoint)
     elif method == "cwpo":
-        _train_cwpo(cfg, wrapper, ref_model, args.pseudo_labels)
+        _train_cwpo(cfg, wrapper, ref_model, args.pseudo_labels, args.resume_dpo_checkpoint)
     elif method == "baseline_dpo":
-        _train_baseline_dpo(cfg, wrapper, ref_model)
+        _train_baseline_dpo(cfg, wrapper, ref_model, args.resume_dpo_checkpoint)
     else:
         raise ValueError(f"Unknown method: '{method}'. Choose: wdpo, cwpo, baseline_dpo")
 
@@ -105,7 +133,8 @@ def main():
 
 # ──────────────────────────────────────────────────────────────────────────── #
 
-def _train_wdpo(cfg, wrapper, ref_model, pseudo_labels_path: str):
+def _train_wdpo(cfg, wrapper, ref_model, pseudo_labels_path: str,
+                resume_from_checkpoint: str = None):
     """
     Phase 3 WDPO: Standard DPO on D_weak.
 
@@ -134,12 +163,15 @@ def _train_wdpo(cfg, wrapper, ref_model, pseudo_labels_path: str):
         train_dataset=train_dataset.to_hf(),
         processing_class=wrapper.tokenizer,
     )
-    trainer.train()
+    if resume_from_checkpoint:
+        logger.info(f"Resuming WDPO DPO from checkpoint: {resume_from_checkpoint}")
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     trainer.save_model(args.output_dir)
     logger.info(f"WDPO strong model saved to {args.output_dir}")
 
 
-def _train_cwpo(cfg, wrapper, ref_model, pseudo_labels_path: str):
+def _train_cwpo(cfg, wrapper, ref_model, pseudo_labels_path: str,
+                resume_from_checkpoint: str = None):
     """
     Phase 3 CWPO: Confidence-Weighted DPO (CW-DPO) on D_weak.
 
@@ -185,12 +217,14 @@ def _train_cwpo(cfg, wrapper, ref_model, pseudo_labels_path: str):
         train_dataset=train_dataset,
         processing_class=wrapper.tokenizer,
     )
-    trainer.train()
+    if resume_from_checkpoint:
+        logger.info(f"Resuming CWPO DPO from checkpoint: {resume_from_checkpoint}")
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     trainer.save_model(args.output_dir)
     logger.info(f"CWPO strong model saved to {args.output_dir}")
 
 
-def _train_baseline_dpo(cfg, wrapper, ref_model):
+def _train_baseline_dpo(cfg, wrapper, ref_model, resume_from_checkpoint: str = None):
     """
     Baseline: Standard DPO on full dataset D (toàn bộ D, không tách D_l/D_u).
 
@@ -223,7 +257,9 @@ def _train_baseline_dpo(cfg, wrapper, ref_model):
         train_dataset=train_dataset.to_hf(),
         processing_class=wrapper.tokenizer,
     )
-    trainer.train()
+    if resume_from_checkpoint:
+        logger.info(f"Resuming Baseline DPO from checkpoint: {resume_from_checkpoint}")
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     trainer.save_model(args.output_dir)
     logger.info(f"Baseline DPO model saved to {args.output_dir}")
 

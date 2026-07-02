@@ -44,11 +44,14 @@ weak_model_dpo:
 # ── Strong Model SFT ────────────────────────────────────────
 sft:
   output_dir: outputs/wdpo/hh_rlhf/sft_strong
-  num_train_epochs: 1                   # 1 epoch for WDPO per spec
+  num_train_epochs: 3                   # 3 epochs per spec (Bảng 9)
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 8
-  learning_rate: 1.0e-5
-  gradient_checkpointing: false         # set true when device_map: auto
+  learning_rate: 1.0e-5                 # 1e-5 per spec
+  weight_decay: 0.05                    # 0.05 per spec
+  optim: paged_adamw_32bit              # paged adamw 32bit per spec
+  warmup_steps: 100                     # 100 steps per spec
+  gradient_checkpointing: true          # True per spec
 
 # ── Strong Model DPO (Phase 3) ──────────────────────────────
 training:
@@ -56,9 +59,12 @@ training:
   num_train_epochs: 5
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 8
-  learning_rate: 5.0e-5                 # 5e-5 for WDPO standard DPO per spec
-  beta: 0.1                             # standard DPO beta per spec
-  gradient_checkpointing: false         # set true when device_map: auto
+  learning_rate: 5.0e-6                 # 5e-6 per spec (Bảng 8)
+  beta: 0.5                             # 0.5 per spec (Bảng 8)
+  weight_decay: 0.05                    # 0.05 per spec
+  optim: paged_adamw_32bit              # paged adamw 32bit per spec
+  warmup_steps: 100                     # 100 steps per spec
+  gradient_checkpointing: true          # True per spec
 
 weak_label_output_dir: outputs/wdpo/hh_rlhf/weak_labels
 

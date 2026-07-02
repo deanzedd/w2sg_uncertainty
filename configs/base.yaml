@@ -183,10 +183,18 @@ eval:
   # Tăng lên nếu VRAM còn dư sau khi load 2 model, giảm xuống 1 nếu OOM
   gen_batch_size: 16 #4
 
+  # ── Generation hyperparameters (paper spec) ──────────────────────────
+  # Theo paper: temperature=0.95 (sampling), max_new_tokens=512
+  # Đặt gen_do_sample: false để dùng greedy decoding (không khuyến nghị)
+  gen_max_new_tokens: 512    # paper spec: 512
+  gen_temperature: 0.95      # paper spec: 0.95
+  gen_do_sample: true        # paper spec: sampling (không phải greedy)
+  gen_top_p: 1.0             # paper spec: không dùng nucleus sampling
+
 # ── Logging ───────────────────────────────────────────────────
 wandb_project: w2sg_uncertainty
 wandb_run_name: null                    # null = auto-generated
-use_wandb: false # true
+use_wandb: true # true
 
 # ── Paths ─────────────────────────────────────────────────────
 cache_dir: .cache                       # HuggingFace cache

@@ -108,7 +108,9 @@ def build_sft_args(cfg: DictConfig, role: str = "strong") -> SFTConfig:
         learning_rate=float(sft_cfg.get("learning_rate", 1e-5)),  # 1e-5 per spec
         lr_scheduler_type=sft_cfg.get("lr_scheduler_type", "cosine"),
         warmup_ratio=sft_cfg.get("warmup_ratio", 0.1),
-        weight_decay=sft_cfg.get("weight_decay", 0.01),
+        warmup_steps=sft_cfg.get("warmup_steps", 0),  # 100 per spec; overrides warmup_ratio when > 0
+        weight_decay=sft_cfg.get("weight_decay", 0.05),  # 0.05 per spec
+        optim=sft_cfg.get("optim", "paged_adamw_32bit"),  # paged adamw 32bit per spec
         logging_steps=sft_cfg.get("logging_steps", 50),
         save_steps=sft_cfg.get("save_steps", 500),
         eval_steps=sft_cfg.get("eval_steps", 500),
@@ -167,6 +169,7 @@ def run_sft(
     args: SFTConfig,
     eval_dataset: Optional[Dataset] = None,
     formatting_func=None,  # kept for API compatibility but no longer used
+    resume_from_checkpoint: Optional[str] = None,
 ) -> SFTTrainer:
     """
     Run SFT training and return the trained SFTTrainer.
@@ -201,7 +204,9 @@ def run_sft(
     )
 
     logger.info(f"Starting SFT training... output_dir={args.output_dir}")
-    trainer.train()
+    if resume_from_checkpoint:
+        logger.info(f"Resuming SFT from checkpoint: {resume_from_checkpoint}")
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     trainer.save_model(args.output_dir)
     logger.info(f"SFT model saved to {args.output_dir}")
     return trainer

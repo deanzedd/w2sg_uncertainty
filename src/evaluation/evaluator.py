@@ -228,10 +228,31 @@ class Evaluator:
         self,
         model: AutoModelForCausalLM,
         prompts: List[str],
-        max_new_tokens: int = 256,
+        max_new_tokens: int = 512,
         batch_size: int = 4,
     ) -> List[str]:
         """Generate responses for a list of prompts."""
+        # Paper spec: temperature=0.95 (sampling), max_new_tokens=512
+        # Read from eval config; fall back to paper defaults.
+        gen_max_new_tokens = int(
+            self.eval_cfg.get("gen_max_new_tokens", None) or max_new_tokens
+        )
+        gen_temperature = float(
+            self.eval_cfg.get("gen_temperature", None) or 0.95
+        )
+        gen_do_sample = bool(
+            self.eval_cfg.get("gen_do_sample", True)
+        )
+        gen_top_p = float(
+            self.eval_cfg.get("gen_top_p", None) or 1.0
+        )
+
+        logger.info(
+            f"Generation settings: do_sample={gen_do_sample}, "
+            f"temperature={gen_temperature}, top_p={gen_top_p}, "
+            f"max_new_tokens={gen_max_new_tokens}"
+        )
+
         # Khi device_map="auto", model layers nằm trên nhiều GPU khác nhau.
         # Input tensor phải được move tới device của embedding layer (GPU đầu tiên).
         # next(model.parameters()).device trả về đúng điều này trong mọi trường hợp.
@@ -254,9 +275,10 @@ class Evaluator:
 
             outputs = model.generate(
                 **enc,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                temperature=1.0,
+                max_new_tokens=gen_max_new_tokens,  # 512 per paper spec
+                do_sample=gen_do_sample,             # True per paper spec
+                temperature=gen_temperature,          # 0.95 per paper spec
+                top_p=gen_top_p,
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
             )

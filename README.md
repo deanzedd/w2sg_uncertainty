@@ -451,7 +451,121 @@ training:
 | 8 GB | 1 | 16 | 16 |
 | < 8 GB | 1 | 4–8 | 4–8 |
 
-### 6. Multi-GPU Training (4× RTX 3080 / card 10 GB)
+### 6. Resume từ Checkpoint
+
+Tất cả training scripts đều hỗ trợ tiếp tục train từ checkpoint có sẵn, hữu ích khi job bị cancel giữa chừng hoặc muốn train thêm epoch.
+
+#### Tóm tắt các flags
+
+| Script | Flag | Ý nghĩa |
+|---|---|---|
+| `train_sft.py` | `--resume_sft_checkpoint` | Resume SFT strong model |
+| `train_strong.py` | `--resume_dpo_checkpoint` | Resume DPO strong model (baseline / WDPO / CWPO) |
+| `train_weak_model.py` | `--resume_weak_sft_checkpoint` | Resume weak model SFT (bước 1) |
+| `train_weak_model.py` | `--resume_weak_dpo_checkpoint` | Resume weak model DPO (bước 2) |
+| `train_reward_model.py` | `--resume_reward_checkpoint` | Resume reward model (CWPO) |
+
+> **Lưu ý về `--resume_dpo_checkpoint`:** Base model + tokenizer vẫn được load từ `--sft_model_path` (vì LoRA checkpoint chỉ chứa `adapter_model.safetensors`, không có tokenizer files). HF Trainer tự động re-load adapter weights từ checkpoint, restore optimizer/scheduler state, và bỏ qua các steps đã chạy.
+
+---
+
+#### Resume SFT (train_sft.py)
+
+```bash
+# SFT bị cancel tại checkpoint-500, resume train tiếp
+python scripts/train_sft.py --config configs/baseline_dpo_hh_rlhf.yaml \
+    --resume_sft_checkpoint outputs/baseline_dpo/hh_rlhf/sft_strong/checkpoint-500
+
+# Resume SFT với multi-GPU
+CUDA_VISIBLE_DEVICES=1,2,3 python scripts/train_sft.py \
+    --config configs/wdpo_hh_rlhf.yaml \
+    --resume_sft_checkpoint outputs/wdpo/hh_rlhf/sft_strong/checkpoint-500 \
+    use_lora=true lora_r=8 lora_alpha=16
+```
+
+#### Resume DPO Strong Model (train_strong.py)
+
+```bash
+# Baseline DPO — resume từ checkpoint-20200
+python scripts/train_strong.py --config configs/baseline_dpo_hh_rlhf.yaml \
+    --resume_dpo_checkpoint outputs/baseline_dpo/hh_rlhf/strong_model/checkpoint-20200 \
+    use_lora=true lora_r=8 lora_alpha=16
+
+# WDPO — resume DPO strong model
+python scripts/train_strong.py --config configs/wdpo_hh_rlhf.yaml \
+    --pseudo_labels outputs/wdpo/hh_rlhf/weak_labels/pseudo_labeled.jsonl \
+    --resume_dpo_checkpoint outputs/wdpo/hh_rlhf/strong_model/checkpoint-5000 \
+    use_lora=true lora_r=8 lora_alpha=16
+
+# CWPO — resume CW-DPO strong model
+python scripts/train_strong.py --config configs/cwpo_hh_rlhf.yaml \
+    --pseudo_labels outputs/cwpo/hh_rlhf/weak_labels/pseudo_labeled.jsonl \
+    --resume_dpo_checkpoint outputs/cwpo/hh_rlhf/strong_model/checkpoint-5000 \
+    use_lora=true lora_r=8 lora_alpha=16
+```
+
+#### Resume Weak Model (train_weak_model.py — WDPO only)
+
+```bash
+# Resume weak model SFT (bước 1)
+python scripts/train_weak_model.py --config configs/wdpo_hh_rlhf.yaml \
+    --resume_weak_sft_checkpoint outputs/wdpo/hh_rlhf/weak_model_sft/checkpoint-300
+
+# Resume weak model DPO (bước 2) — bỏ qua SFT bằng --skip_sft
+python scripts/train_weak_model.py --config configs/wdpo_hh_rlhf.yaml \
+    --skip_sft \
+    --weak_sft_path outputs/wdpo/hh_rlhf/weak_model_sft \
+    --resume_weak_dpo_checkpoint outputs/wdpo/hh_rlhf/weak_model_dpo/checkpoint-500
+
+# Resume cả hai bước (train SFT từ đầu, nhưng DPO resume từ checkpoint)
+python scripts/train_weak_model.py --config configs/wdpo_hh_rlhf.yaml \
+    --resume_weak_dpo_checkpoint outputs/wdpo/hh_rlhf/weak_model_dpo/checkpoint-500
+```
+
+#### Resume Reward Model (train_reward_model.py — CWPO only)
+
+```bash
+# Resume reward model từ checkpoint-500
+python scripts/train_reward_model.py --config configs/cwpo_hh_rlhf.yaml \
+    --resume_reward_checkpoint outputs/cwpo/hh_rlhf/reward_model/checkpoint-500
+```
+
+#### Resume qua Pipeline (run_pipeline.py)
+
+Pipeline hỗ trợ forward 2 flags xuống scripts con:
+
+```bash
+# Baseline DPO: SFT đã xong, resume DPO từ checkpoint-20200
+CUDA_VISIBLE_DEVICES=1,2,3 python pipeline/run_pipeline.py \
+    --config configs/baseline_dpo_hh_rlhf.yaml \
+    --skip_sft \
+    --sft_model_path outputs/baseline_dpo/hh_rlhf/sft_strong \
+    --resume_dpo_checkpoint outputs/baseline_dpo/hh_rlhf/strong_model/checkpoint-20200 \
+    use_lora=true lora_r=8 lora_alpha=16
+
+# WDPO: resume SFT Phase 2b từ checkpoint-500
+CUDA_VISIBLE_DEVICES=1,2,3 python pipeline/run_pipeline.py \
+    --config configs/wdpo_hh_rlhf.yaml \
+    --skip_weak_model \
+    --pseudo_labels outputs/wdpo/hh_rlhf/weak_labels/pseudo_labeled.jsonl \
+    --resume_sft_checkpoint outputs/wdpo/hh_rlhf/sft_strong/checkpoint-500 \
+    use_lora=true lora_r=8 lora_alpha=16
+
+# CWPO: resume DPO Phase 3 từ checkpoint-5000
+CUDA_VISIBLE_DEVICES=1,2,3 python pipeline/run_pipeline.py \
+    --config configs/cwpo_hh_rlhf.yaml \
+    --skip_reward_model --skip_sft \
+    --pseudo_labels outputs/cwpo/hh_rlhf/weak_labels/pseudo_labeled.jsonl \
+    --sft_model_path outputs/cwpo/hh_rlhf/sft_strong \
+    --resume_dpo_checkpoint outputs/cwpo/hh_rlhf/strong_model/checkpoint-5000 \
+    use_lora=true lora_r=8 lora_alpha=16
+```
+
+> **Pipeline lưu ý:** Pipeline chỉ forward `--resume_sft_checkpoint` và `--resume_dpo_checkpoint`. Để resume reward model hoặc weak model, chạy script tương ứng trực tiếp.
+
+---
+
+### 7. Multi-GPU Training (4× RTX 3080 / card 10 GB)
 
 #### Root cause của lỗi OOM
 
