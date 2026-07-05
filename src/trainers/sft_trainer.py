@@ -90,7 +90,10 @@ def build_sft_args(cfg: DictConfig, role: str = "strong") -> SFTConfig:
     # When device_map="auto" is used (multi-GPU model parallelism),
     # the Trainer must NOT move the model itself — HF handles placement.
     # Also, gradient_checkpointing reduces VRAM usage significantly.
-    use_device_map = cfg.get("device_map", None) == "auto" or cfg.get("use_lora", False)
+    # Mirror _resolve_device_map logic: device_map is used whenever any non-null
+    # value is explicitly set, or LoRA is on, or CUDA is available (auto-detect fires).
+    _explicit_dm = cfg.get("device_map", None)
+    use_device_map = (_explicit_dm is not None) or cfg.get("use_lora", False) or torch.cuda.is_available()
 
     # Auto-detect precision: handles faulty GPU 0 / no CUDA / bf16 unsupported
     # ST1 fix: pass cfg.sft (section config) not full cfg, so _detect_precision

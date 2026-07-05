@@ -26,6 +26,12 @@ strong_model_name: facebook/opt-2.7b
 # Change to: device_map: auto  when using Qwen2.5-7B or OPT-6.7b+
 # NOTE: use_lora=true below auto-forces device_map="auto" for PEFT multi-GPU
 device_map: null
+# device_map is intentionally NOT set here — the code auto-detects:
+#   1 GPU  (e.g. 1×120 GB)  → "cuda:0"  (single-card, full model on GPU 0)
+#   N GPUs (e.g. 4×10  GB)  → "auto"    (sharded across all available GPUs)
+# Override here ONLY if you need to force a specific placement, e.g.:
+#   device_map: auto        # force multi-GPU on a single-card machine
+#   device_map: "cuda:1"    # force a specific GPU
 
 # ── LoRA (paper Bảng 9: r=8, alpha=16, dropout=0.05) ──────────────────────
 use_lora: true          # LoRA for strong model SFT and DPO training

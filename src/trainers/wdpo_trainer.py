@@ -23,6 +23,7 @@ import logging
 from typing import Dict, List
 
 import datasets as hf_datasets
+import torch
 from omegaconf import DictConfig
 from trl import DPOConfig
 

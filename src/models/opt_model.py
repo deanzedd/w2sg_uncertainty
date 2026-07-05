@@ -77,4 +77,9 @@ class OPTModelWrapper(BaseModelWrapper):
             **load_kwargs,
         )
 
+        # Single GPU: device_map is None → model on CPU. Move to CUDA manually.
+        # (device_map="cuda:0" would trigger accelerate dispatch hooks that break autograd)
+        if device_map is None and torch.cuda.is_available():
+            model = model.to("cuda")
+
         return model, tokenizer
