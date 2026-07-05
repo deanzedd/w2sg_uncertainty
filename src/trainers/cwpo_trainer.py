@@ -289,7 +289,10 @@ def build_cwpo_training_args(cfg: DictConfig) -> DPOConfig:
       - lora_r:        8, lora_alpha: 16
     """
     train_cfg = cfg.training
-    use_device_map = cfg.get("device_map", None) == "auto" or cfg.get("use_lora", False)
+    # Mirror _resolve_device_map logic: device_map is used whenever any non-null
+    # value is explicitly set, or LoRA is on, or CUDA is available (auto-detect fires).
+    _explicit_dm = cfg.get("device_map", None)
+    use_device_map = (_explicit_dm is not None) or cfg.get("use_lora", False) or torch.cuda.is_available()
     # Linked fix (DT2 pattern): use _detect_precision(cfg.training) to validate
     # bf16 GPU support instead of _detect_precision(cfg) which reads top-level config.
     fp16, bf16 = _detect_precision(cfg.training)

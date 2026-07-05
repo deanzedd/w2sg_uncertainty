@@ -19,6 +19,7 @@ import logging
 from typing import Dict, List
 
 import datasets as hf_datasets
+import torch
 from omegaconf import DictConfig
 from trl import DPOConfig
 
@@ -72,7 +73,11 @@ def build_wdpo_training_args(cfg: DictConfig) -> DPOConfig:
       - lora_r:        8, lora_alpha: 16
     """
     train_cfg = cfg.training
-    use_device_map = cfg.get("device_map", None) == "auto" or cfg.get("use_lora", False)
+    # Mirror _resolve_device_map logic: device_map is used when it's an explicit
+    # non-null string, or when LoRA is enabled, or when auto-detect fires.
+    # For ddp_find_unused_parameters: disable when device_map is in play (non-DDP path).
+    _explicit_dm = cfg.get("device_map", None)
+    use_device_map = (_explicit_dm is not None) or cfg.get("use_lora", False) or torch.cuda.is_available()
     fp16, bf16 = _detect_precision(cfg)
 
     return DPOConfig(

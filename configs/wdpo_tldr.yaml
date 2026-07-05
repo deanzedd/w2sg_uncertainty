@@ -16,23 +16,27 @@ strong_model_name: facebook/opt-2.7b
 #   Qwen/Qwen2.5-7B          → device_map: auto (multi-GPU, needs 4×10GB)
 
 # ── Multi-GPU ──────────────────────────────────────────────────────────────
-# Change to: device_map: auto  when using Qwen2.5-7B or OPT-6.7b+
-device_map: null
+# device_map is intentionally NOT set here — the code auto-detects:
+#   1 GPU  (e.g. 1×120 GB)  → "cuda:0"  (single-card, full model on GPU 0)
+#   N GPUs (e.g. 4×10  GB)  → "auto"    (sharded across all available GPUs)
+# Override here ONLY if you need to force a specific placement, e.g.:
+#   device_map: auto        # force multi-GPU on a single-card machine
+#   device_map: "cuda:1"    # force a specific GPU
 
 # ── WDPO Weak Model: SFT → DPO on D_l ─────────────────────
 weak_model_sft:
   output_dir: outputs/wdpo/tldr/weak_model_sft
   num_train_epochs: 1                   # SFT weak model: 1 epoch per WDPO spec
-  per_device_train_batch_size: 2
-  gradient_accumulation_steps: 1        # effective 16
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 2        # effective 16
   learning_rate: 1.0e-5
   gradient_checkpointing: false
 
 weak_model_dpo:
   output_dir: outputs/wdpo/tldr/weak_model_dpo
   num_train_epochs: 1
-  per_device_train_batch_size: 1
-  gradient_accumulation_steps: 1
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 2
   learning_rate: 5.0e-5                 # 5e-5 for standard DPO per spec
   beta: 0.1                             # standard DPO beta
   gradient_checkpointing: false
@@ -40,8 +44,8 @@ weak_model_dpo:
 sft:
   output_dir: outputs/wdpo/tldr/sft_strong
   num_train_epochs: 1                   # 1 epoch for WDPO per spec
-  per_device_train_batch_size: 3
-  gradient_accumulation_steps: 1
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 2
   learning_rate: 1.0e-5
   gradient_checkpointing: false  
 
@@ -49,12 +53,12 @@ sft:
 training:
   output_dir: outputs/wdpo/tldr/strong_model
   num_train_epochs: 5
-  per_device_train_batch_size: 1
-  gradient_accumulation_steps: 1
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 4
   learning_rate: 5.0e-5                 # 5e-5 for WDPO standard DPO per spec
   beta: 0.1                             # standard DPO beta per spec
   gradient_checkpointing: false          # set true when device_map: auto
 
 weak_label_output_dir: outputs/wdpo/tldr/weak_labels
 
-wandb_run_name: wdpo-tldr-opt125m-opt1.3b
+wandb_run_name: wdpo-tldr-opt125m-opt2.7b

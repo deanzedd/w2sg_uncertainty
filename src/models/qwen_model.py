@@ -90,4 +90,8 @@ class Qwen25ModelWrapper(BaseModelWrapper):
             **load_kwargs,
         )
 
+        # Single GPU: device_map is None → model on CPU. Move to CUDA manually.
+        if device_map is None and torch.cuda.is_available():
+            model = model.to("cuda")
+
         return model, tokenizer

@@ -41,6 +41,14 @@ class BaseModelWrapper(ABC):
         self.cfg = cfg
         self.model, self.tokenizer = self.load_model_and_tokenizer()
         self._fix_tokenizer(self.tokenizer)
+
+        # Ensure all parameters are trainable.
+        # SafeTensors / from_pretrained with low_cpu_mem_usage=True (default in
+        # transformers >= 4.38) loads weights via meta-device init + param.copy_(),
+        # which can leave requires_grad=False. Without this, DPO backward() fails:
+        #   RuntimeError: element 0 of tensors does not require grad
+        self.model.requires_grad_(True)
+
         if cfg.get("use_lora", False):
             self.model = self._wrap_lora(self.model, cfg)
         # M1 fix: gradient_checkpointing_enable() is NOT called here.
@@ -110,6 +118,12 @@ class BaseModelWrapper(ABC):
             load_kwargs["cache_dir"] = cache_dir
 
         ref = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+
+        # Single GPU: device_map is None → model loaded on CPU.
+        # Move to CUDA manually (avoids accelerate dispatch hooks that break autograd).
+        if device_map is None and torch.cuda.is_available():
+            ref = ref.to("cuda")
+
         ref.eval()
         for param in ref.parameters():
             param.requires_grad = False
@@ -124,27 +138,37 @@ class BaseModelWrapper(ABC):
         """
         Determine the device_map to pass to from_pretrained().
 
-        Priority:
-          1. cfg.device_map  (explicit override in YAML or CLI)
-          2. "auto" if use_lora=True  (PEFT requires device_map for multi-GPU)
-          3. None            (single-GPU default, HF Trainer manages placement)
+        Returns:
+          None       — single GPU: do NOT use device_map (avoids accelerate dispatch
+                       hooks that break autograd). Caller must .to("cuda") after load.
+          "auto"     — multi-GPU: HF shards across all GPUs by free memory
+          "cpu"      — no CUDA available
+          <string>   — explicit override from config (e.g. "balanced", "auto")
 
-        device_map values:
-          None        — load model entirely on CPU, then Trainer moves to cuda:0
-          "auto"      — HF shards layers across all available GPUs by free memory
-          "balanced"  — HF shards layers equally across all available GPUs
-          dict        — manual placement, e.g. {"model.embed": 0, "lm_head": 1}
-
-        For 4× RTX 3080 (10 GB each) + Qwen2.5-7B (~14 GB bfloat16):
-          → use device_map: auto  in your config YAML (see configs/base.yaml)
+        Why NOT "cuda:0":
+          device_map="cuda:0" triggers accelerate's dispatch_model() which installs
+          AlignDevicesHook on every module. These hooks break the autograd graph,
+          causing: RuntimeError: element 0 of tensors does not require grad
+          The correct single-GPU approach is: load on CPU → model.to("cuda").
         """
-        explicit = cfg.get("device_map", None)
-        if explicit is not None:
-            return explicit
-        # LoRA with multi-GPU: PEFT requires device_map for gradient offloading
+        import torch as _torch
+
+        # Explicit non-null config override (e.g. device_map: "auto" or "balanced")
+        explicit_device_map = cfg.get("device_map", None)
+        if explicit_device_map is not None:
+            return explicit_device_map
+
+        # LoRA with multi-GPU: PEFT requires device_map
         if cfg.get("use_lora", False):
             return "auto"
-        return None
+
+        # Auto-detect:
+        #   1 GPU  → None (caller does .to("cuda") manually, no dispatch hooks)
+        #   N GPUs → "auto" (sharded, dispatch hooks OK for multi-GPU)
+        if not _torch.cuda.is_available():
+            return "cpu"
+        n_gpus = _torch.cuda.device_count()
+        return None if n_gpus == 1 else "auto"
 
     @staticmethod
     def _resolve_dtype(cfg) -> "torch.dtype":
