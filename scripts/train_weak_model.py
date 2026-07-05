@@ -45,6 +45,20 @@ def parse_args():
                         help="Skip weak model SFT (assumes already done)")
     parser.add_argument("--weak_sft_path", type=str, default=None,
                         help="Pre-trained weak SFT model path (to skip SFT step)")
+    parser.add_argument(
+        "--resume_weak_sft_checkpoint", type=str, default=None,
+        help="Path to a weak model SFT checkpoint to resume training from "
+             "(e.g. outputs/wdpo/hh_rlhf/weak_model_sft/checkpoint-300). "
+             "Only used when --skip_sft is NOT set. "
+             "HF Trainer restores optimizer/scheduler state and skips completed steps.",
+    )
+    parser.add_argument(
+        "--resume_weak_dpo_checkpoint", type=str, default=None,
+        help="Path to a weak model DPO checkpoint to resume training from "
+             "(e.g. outputs/wdpo/hh_rlhf/weak_model_dpo/checkpoint-500). "
+             "When set, model weights are loaded from this checkpoint (not the SFT output). "
+             "HF Trainer also restores optimizer/scheduler state and skips completed steps.",
+    )
     parser.add_argument("overrides", nargs="*", help="OmegaConf overrides: key=value")
     return parser.parse_args()
 
@@ -167,6 +181,7 @@ def main():
             train_dataset=labeled_ds,
             args=sft_args,
             eval_dataset=eval_ds,
+            resume_from_checkpoint=args.resume_weak_sft_checkpoint,
         )
         logger.info(f"Weak model SFT (π_w^SFT) saved to: {sft_args.output_dir}")
         weak_sft_output = sft_args.output_dir
@@ -195,12 +210,24 @@ def main():
     # Must use device_map=None: OPT-125M fits on a single GPU; using "auto" here
     # triggers accelerate's multi-GPU wrapping which calls convert_to_fp32 on
     # ref_model outputs → OOM even when device_map was passed via CLI as "auto".
+    #
+    # When --resume_weak_dpo_checkpoint is set, we still load from weak_sft_output
+    # (has full model + tokenizer files). The DPO checkpoint only contains adapter
+    # weights / optimizer state, which trainer.train(resume_from_checkpoint=...)
+    # will restore automatically.
+    weak_dpo_load_path = weak_sft_output
+    if args.resume_weak_dpo_checkpoint:
+        logger.info(
+            f"Resume mode: base model loaded from '{weak_dpo_load_path}', "
+            f"optimizer state will be restored from checkpoint: "
+            f"{args.resume_weak_dpo_checkpoint}"
+        )
     weak_dpo_cfg = OmegaConf.merge(cfg, OmegaConf.create({
         "strong_model_name": cfg.weak_model_name,
         "use_lora": False,
         "device_map": None,   # single-GPU: avoids accelerate fp32-cast OOM
     }))
-    policy_wrapper = get_model_wrapper(weak_sft_output, weak_dpo_cfg)
+    policy_wrapper = get_model_wrapper(weak_dpo_load_path, weak_dpo_cfg)
 
     # Reference model = frozen deep copy of π_w^SFT.
     # Ensure it lives on the same device as the policy model so DPOTrainer
@@ -231,7 +258,11 @@ def main():
         train_dataset=hf_labeled,
         processing_class=policy_wrapper.tokenizer,
     )
-    trainer.train()
+    if args.resume_weak_dpo_checkpoint:
+        logger.info(
+            f"Resuming weak model DPO from checkpoint: {args.resume_weak_dpo_checkpoint}"
+        )
+    trainer.train(resume_from_checkpoint=args.resume_weak_dpo_checkpoint)
     trainer.save_model(dpo_args.output_dir)
 
     # Also save the SFT reference path alongside for labeling phase

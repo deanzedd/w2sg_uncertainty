@@ -1,4 +1,7 @@
 # CWPO — Reddit TL;DR experiment
+# Inherits from base.yaml, overrides experiment-specific fields
+# Usage: python pipeline/run_pipeline.py --config configs/cwpo_tldr.yaml
+
 defaults:
   - base
 
@@ -7,7 +10,11 @@ dataset_name: tldr
 labeled_ratio: 0.3
 
 weak_model_name: facebook/opt-125m
-strong_model_name: facebook/opt-1.3b
+# CWPO weak model: backbone + scalar head (reward model style)
+# Qwen2.5-0.5B alternative:
+# weak_model_name: Qwen/Qwen2.5-0.5B
+
+strong_model_name: facebook/opt-2.7b
 # Alternative strong models:
 #   facebook/opt-2.7b        → device_map: null (single GPU, ~5GB)
 #   facebook/opt-6.7b        → device_map: auto (multi-GPU)
@@ -17,29 +24,53 @@ strong_model_name: facebook/opt-1.3b
 
 # ── Multi-GPU ──────────────────────────────────────────────────────────────
 # Change to: device_map: auto  when using Qwen2.5-7B or OPT-6.7b+
+# NOTE: use_lora=true below auto-forces device_map="auto" for PEFT multi-GPU
 device_map: null
 
+# ── LoRA (paper Bảng 9: r=8, alpha=16, dropout=0.05) ──────────────────────
+use_lora: true          # LoRA for both SFT and DPO strong model training
+lora_r: 8               # LoRA rank per paper spec (Bảng 9)
+lora_alpha: 16          # LoRA alpha per paper spec (Bảng 9)
+lora_dropout: 0.05      # LoRA dropout per paper spec (Bảng 9)
+lora_target_modules: null  # null = PEFT auto-detects (q_proj, v_proj, etc.)
+
+# ── Reward Model (CWPO weak annotator, Bradley-Terry loss) ─────────────────
 reward_model:
+  num_train_epochs: 5
+  per_device_train_batch_size: 16         # paper: 32 (OOM), 4×8=32 via grad_accum
+  gradient_accumulation_steps: 8         # effective = 16×8 = 128
+  learning_rate: 1.0e-5                  # paper spec (Bảng 7)
+  weight_decay: 0.0                      # paper Bảng 7: dùng Adam (không có weight decay)
+  warmup_ratio: 0.0                      # paper Bảng 7: không đề cập warmup → không dùng
   output_dir: outputs/cwpo/tldr/reward_model
 
+# ── Strong Model SFT (Phase 2b) ─────────────────────────────────────────────
 sft:
   output_dir: outputs/cwpo/tldr/sft_strong
-  num_train_epochs: 3                   # 3 epochs for CWPO per spec
-  per_device_train_batch_size: 4
-  gradient_accumulation_steps: 4        # effective batch=16
-  learning_rate: 1.0e-5
-  gradient_checkpointing: false         # set true when device_map: auto
+  num_train_epochs: 3                   # 3 epochs for CWPO per spec (Bảng 9)
+  per_device_train_batch_size: 1        # opt-2.7b: 1 to avoid OOM; grad_accum=8 → eff=8
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 8        # effective batch=8 (close to 16 target, limited by VRAM)
+  learning_rate: 1.0e-5                 # 1e-5 per spec (Bảng 9)
+  lr_scheduler_type: cosine             # cosine per spec (Bảng 9)
+  warmup_steps: 100                     # 100 steps per spec (Bảng 9); overrides warmup_ratio
+  weight_decay: 0.05                    # 0.05 per spec (Bảng 9)
+  optim: paged_adamw_32bit              # paged adamw 32bit per spec (Bảng 9)
+  gradient_checkpointing: true          # True per spec (Bảng 9)
 
-
+# ── Strong Model CW-DPO Training (Phase 3) ─────────────────────────────────
 training:
   output_dir: outputs/cwpo/tldr/strong_model
   num_train_epochs: 5
-  per_device_train_batch_size: 4
-  gradient_accumulation_steps: 4
-  learning_rate: 5.0e-6                 # 5e-6 for CWPO per spec
-  beta: 0.5                             # 0.5 for CWPO per spec
-  gradient_checkpointing: false         # set true when device_map: auto
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 5.0e-6                 # 5e-6 for CWPO per spec (Bảng 8)
+  beta: 0.5                             # 0.5 for CWPO per spec (Bảng 8)
+  weight_decay: 0.05                    # 0.05 per spec (Bảng 8)
+  optim: paged_adamw_32bit              # paged adamw 32bit per spec (Bảng 8)
+  warmup_steps: 100                     # 100 steps per spec (Bảng 8)
+  gradient_checkpointing: true          # True per spec (Bảng 8)
 
 weak_label_output_dir: outputs/cwpo/tldr/weak_labels
 
-wandb_run_name: cwpo-tldr-opt125m-opt1.3b
+wandb_run_name: cwpo-tldr-opt125m-opt2.7b

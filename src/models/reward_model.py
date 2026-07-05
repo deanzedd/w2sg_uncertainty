@@ -61,6 +61,13 @@ class ScalarRewardModel(nn.Module):
         # Initialize scalar head with small weights
         nn.init.normal_(self.scalar_head.weight, mean=0.0, std=0.02)
 
+        # RM-dtype fix: cast scalar_head to the same dtype as backbone.
+        # nn.Linear defaults to float32 regardless of what dtype the backbone uses.
+        # When backbone is loaded with torch_dtype=bfloat16, the last_token_hidden
+        # state is bfloat16 but scalar_head.weight is float32 → RuntimeError:
+        # "expected mat1 and mat2 to have the same dtype, but got: BFloat16 != float"
+        self.scalar_head = self.scalar_head.to(dtype)
+
     def forward(
         self,
         input_ids: torch.Tensor,

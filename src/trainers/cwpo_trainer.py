@@ -211,12 +211,15 @@ class CWPOTrainer(DPOTrainer):
         # Apply confidence weighting
         if confidence_weights is not None and torch.is_tensor(confidence_weights):
             confidence_weights = confidence_weights.to(per_sequence_loss.device).float()
-            # Weighted mean: E[C · loss] / E[C] (normalized to avoid scale issues)
-            weight_sum = confidence_weights.sum().clamp(min=1e-8)
-            loss = (confidence_weights * per_sequence_loss).sum() / weight_sum
+            # Paper spec (detail.txt §3): "nhân trực tiếp trọng số C vào loss của
+            # từng sample, trước khi tính mean cho toàn batch"
+            # → loss = mean(C · per_sample_loss)
+            # NOT sum(C·loss)/sum(C) which inflates loss when C is small.
+            loss = (confidence_weights * per_sequence_loss).mean()
         else:
-            # Fallback: standard DPO loss (uniform weights)
+            # Fallback: standard DPO loss (uniform weights, equivalent to C=1)
             loss = per_sequence_loss.mean()
+
 
         # ── Metrics logging (mirrors TRL's internal tracking) ─────────────
         mode = "train" if model.training else "eval"
@@ -281,11 +284,15 @@ def build_cwpo_training_args(cfg: DictConfig) -> DPOConfig:
     """
     Build DPOConfig (TRL) for CW-DPO strong model training.
 
-    CWPO spec:
+    CWPO spec (Bảng 8):
       - learning_rate: 5e-6
       - beta:          0.5
       - epochs:        3–5
       - batch_size:    4 per device, gradient_accumulation=4 (→ effective 16)
+      - weight_decay:  0.05
+      - optimizer:     paged_adamw_32bit
+      - warmup_steps:  100
+      - gradient_checkpointing: True
       - lora_r:        8, lora_alpha: 16
     """
     train_cfg = cfg.training
@@ -305,8 +312,11 @@ def build_cwpo_training_args(cfg: DictConfig) -> DPOConfig:
         gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 4),
         learning_rate=float(train_cfg.get("learning_rate", 5e-6)),
         lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
-        warmup_ratio=train_cfg.get("warmup_ratio", 0.1),
-        weight_decay=train_cfg.get("weight_decay", 0.0),
+        # warmup: prefer warmup_steps (100 per spec, Bảng 8); zero-out ratio to avoid conflict
+        warmup_steps=train_cfg.get("warmup_steps", 0),
+        warmup_ratio=0.0 if train_cfg.get("warmup_steps", 0) > 0 else train_cfg.get("warmup_ratio", 0.1),
+        weight_decay=train_cfg.get("weight_decay", 0.05),  # 0.05 per spec
+        optim=train_cfg.get("optim", "paged_adamw_32bit"),  # paged adamw 32bit per spec
         logging_steps=train_cfg.get("logging_steps", 10),
         save_steps=train_cfg.get("save_steps", 200),
         eval_steps=train_cfg.get("eval_steps", 200),
@@ -318,7 +328,7 @@ def build_cwpo_training_args(cfg: DictConfig) -> DPOConfig:
         # before the batch reaches compute_loss / _compute_loss
         remove_unused_columns=False,
         # gradient_checkpointing: required for 7B+ models to avoid OOM
-        gradient_checkpointing=train_cfg.get("gradient_checkpointing", False),
+        gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),  # True per spec
         ddp_find_unused_parameters=False if use_device_map else None,
         report_to="wandb" if cfg.get("use_wandb", True) else "none",
         run_name=cfg.get("wandb_run_name", None),

@@ -34,6 +34,14 @@ def parse_args():
     parser.add_argument("--config", required=True)
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--max_samples", type=int, default=None)
+    parser.add_argument(
+        "--resume_reward_checkpoint", type=str, default=None,
+        help="Path to a reward model checkpoint directory to resume training from "
+             "(e.g. outputs/cwpo/hh_rlhf/reward_model/checkpoint-500). "
+             "Directory must contain model.pt, optimizer_state.pt, "
+             "trainer_state.json, and metadata.json. "
+             "Resumes model weights, optimizer state, and skips completed steps.",
+    )
     parser.add_argument("overrides", nargs="*")
     return parser.parse_args()
 
@@ -92,7 +100,11 @@ def main():
         device=device,
         backbone_name=cfg.weak_model_name,  # R2/RT2 fix: needed to write metadata.json
     )
-    trainer.train(train_dataset=labeled_ds, eval_dataset=eval_ds)
+    trainer.train(
+        train_dataset=labeled_ds,
+        eval_dataset=eval_ds,
+        resume_from_checkpoint=args.resume_reward_checkpoint,
+    )
     logger.info("Reward model training complete!")
 
 

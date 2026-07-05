@@ -12,11 +12,17 @@ strong_model_name: facebook/opt-1.3b    # strong policy to align
 sft_model_name: null                     # if null, strong_model_name is used as base for DPO
 
 # ── PEFT / LoRA ───────────────────────────────────────────────
-use_lora: false
-lora_r: 8
-lora_alpha: 16
-lora_dropout: 0.05
-lora_target_modules: null               # null = auto-detect (q_proj, v_proj, etc.)
+# LoRA policy (theo paper):
+#   weak_model_sft / weak_model_dpo / reward_model → LoRA rank = 0 (no LoRA, full fine-tune)
+#   sft (strong SFT)  / training (strong DPO)      → LoRA r=8, α=16, dropout=0.05 (Bảng 8 & 9)
+#
+# use_lora: bật/tắt LoRA toàn cục. Khi False, weak model scripts bỏ qua LoRA tự động.
+# Override use_lora=true trong experiment config khi train strong model với LoRA.
+use_lora: false          # false = default; cwpo/wdpo experiment configs set true for strong model
+lora_r: 8               # LoRA rank (Bảng 8 & 9); dùng khi use_lora=true
+lora_alpha: 16          # LoRA alpha (Bảng 8 & 9)
+lora_dropout: 0.05      # LoRA dropout (Bảng 8 & 9)
+lora_target_modules: null               # null = PEFT auto-detect (q_proj, v_proj, etc.)
 
 # ── Multi-GPU / Memory ────────────────────────────────────────
 # device_map controls how the model is distributed across GPUs:
@@ -90,27 +96,30 @@ weak_model_dpo:
   beta: 0.1                            # standard DPO beta per spec
   max_grad_norm: 1.0
   gradient_checkpointing: false
-  lora_r: 8
-  lora_alpha: 16
+  # NOTE: weak model always trains without LoRA (use_lora forced=False in train_weak_model.py)
+  # lora_r/lora_alpha here have no effect; LoRA params are read from top-level cfg only.
 
 # ── SFT Training (Strong Model) ────────────────────────────────
 sft:
   output_dir: outputs/sft
-  num_train_epochs: 1                   # 1 epoch for WDPO; 3 for CWPO (set in experiment config)
-  per_device_train_batch_size: 4        # 16 target, but default 4 for >7B OOM; grad_accum handles it
-  per_device_eval_batch_size: 4
+  num_train_epochs: 3                   # 1 epoch for WDPO; 3 for CWPO (set in experiment config)
+  per_device_train_batch_size: 4        # 16 target (paper Bảng 9); giảm 4 cho >7B, grad_accum bù
+  per_device_eval_batch_size: 4         # 16 target (paper Bảng 9); giảm 4 cho >7B
   gradient_accumulation_steps: 4       # 4*4=16 effective batch per spec
-  learning_rate: 1.0e-5                # 1e-5 per spec
-  lr_scheduler_type: cosine
-  warmup_ratio: 0.1
-  weight_decay: 0.01
+  learning_rate: 1.0e-5                # 1e-5 per spec (Bảng 9)
+  lr_scheduler_type: cosine            # cosine per spec (Bảng 9)
+  warmup_steps: 100                    # 100 steps per spec (Bảng 9); overrides warmup_ratio
+  weight_decay: 0.05                   # 0.05 per spec (Bảng 9)
+  optim: paged_adamw_32bit             # paged adamw 32bit per spec (Bảng 9)
   logging_steps: 50
   save_steps: 500
   eval_steps: 500
   fp16: false
   bf16: true
   dataloader_num_workers: 4
-  gradient_checkpointing: false         # set true when device_map: auto or large models
+  gradient_checkpointing: true          # True per spec (Bảng 9)
+  # LoRA settings for strong SFT — read from top-level cfg when use_lora=true:
+  # lora_r: 8, lora_alpha: 16, lora_dropout: 0.05  (Bảng 9)
 
 # ── Reward Model Training (CWPO weak annotator) ───────────────
 reward_model:
@@ -131,14 +140,15 @@ reward_model:
 # ── Strong Model (DPO/WDPO/CWPO) Training ────────────────────
 training:
   output_dir: outputs/strong_model
-  num_train_epochs: 1                   # up to 5; override per experiment
+  num_train_epochs: 5                   # up to 5; override per experiment
   per_device_train_batch_size: 4        # 16 target; grad_accum handles OOM for >7B
   per_device_eval_batch_size: 4
   gradient_accumulation_steps: 4       # effective batch=16 per spec
   learning_rate: 5.0e-5                # 5e-5 for WDPO standard DPO; 5e-6 for CWPO (set in exp cfg)
-  lr_scheduler_type: cosine
-  warmup_ratio: 0.1
-  weight_decay: 0.0
+  lr_scheduler_type: cosine            # cosine per spec (Bảng 8)
+  warmup_steps: 100                    # 100 steps per spec (Bảng 8); overrides warmup_ratio
+  weight_decay: 0.05                   # 0.05 per spec (Bảng 8)
+  optim: paged_adamw_32bit             # paged adamw 32bit per spec (Bảng 8)
   logging_steps: 10
   save_steps: 200
   eval_steps: 200
@@ -147,9 +157,9 @@ training:
   dataloader_num_workers: 4
   beta: 0.1                             # DPO beta (KL penalty); 0.5 for CWPO (set in exp cfg)
   max_grad_norm: 1.0
-  gradient_checkpointing: false         # set true when device_map: auto or large models
-  lora_r: 8
-  lora_alpha: 16
+  gradient_checkpointing: true          # True per spec (Bảng 8)
+  # LoRA settings for strong DPO — read from top-level cfg when use_lora=true:
+  # lora_r: 8, lora_alpha: 16, lora_dropout: 0.05  (Bảng 8)
 
 # ── Evaluation ────────────────────────────────────────────────
 eval:
@@ -183,10 +193,18 @@ eval:
   # Tăng lên nếu VRAM còn dư sau khi load 2 model, giảm xuống 1 nếu OOM
   gen_batch_size: 16 #4
 
+  # ── Generation hyperparameters (paper spec) ──────────────────────────
+  # Theo paper: temperature=0.95 (sampling), max_new_tokens=512
+  # Đặt gen_do_sample: false để dùng greedy decoding (không khuyến nghị)
+  gen_max_new_tokens: 512    # paper spec: 512
+  gen_temperature: 0.95      # paper spec: 0.95
+  gen_do_sample: true        # paper spec: sampling (không phải greedy)
+  gen_top_p: 1.0             # paper spec: không dùng nucleus sampling
+
 # ── Logging ───────────────────────────────────────────────────
 wandb_project: w2sg_uncertainty
 wandb_run_name: null                    # null = auto-generated
-use_wandb: false # true
+use_wandb: true # true
 
 # ── Paths ─────────────────────────────────────────────────────
 cache_dir: .cache                       # HuggingFace cache

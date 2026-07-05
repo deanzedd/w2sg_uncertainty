@@ -79,7 +79,7 @@ def parse_args():
                         help="Skip reward model training (CWPO Phase 1b)")
     parser.add_argument("--skip_labeling", action="store_true",
                         help="Skip weak labeling phase (Phase 2)")
-    # ── Pre-computed paths ───────────────────────────────────────────────
+    # ── Pre-computed paths ────────────────────────────────────────────
     parser.add_argument("--pseudo_labels", type=str, default=None,
                         help="Pre-computed D_weak path (skips labeling + SFT on D_weak)")
     parser.add_argument("--sft_model_path", type=str, default=None,
@@ -90,6 +90,12 @@ def parse_args():
                         help="Pre-trained π_w^SFT path used as DPO ref (WDPO)")
     parser.add_argument("--reward_model_path", type=str, default=None,
                         help="Pre-trained reward model path (CWPO, skips training)")
+    # ── Resume checkpoints ───────────────────────────────────────────
+    parser.add_argument("--resume_sft_checkpoint", type=str, default=None,
+                        help="Resume SFT training from this checkpoint directory")
+    parser.add_argument("--resume_dpo_checkpoint", type=str, default=None,
+                        help="Resume DPO strong model training from this checkpoint directory. "
+                             "Model weights will be loaded from this checkpoint.")
     parser.add_argument("--run_gpt4", action="store_true",
                         help="Run GPT-4 win rate in evaluation")
     parser.add_argument("overrides", nargs="*")
@@ -143,20 +149,25 @@ def main():
     # BASELINE DPO
     # ════════════════════════════════════════════════════════════════════
     if method == "baseline_dpo":
-        # ══ Phase 1a: SFT Strong Model on D (toàn bộ dataset) ════════════
+        # ══ Phase 1a: SFT Strong Model on D (toàn bộ dataset) ════════════════════
         if not args.skip_sft:
             logger.info("═" * 60)
             logger.info("PHASE 1a: Baseline — SFT Strong Model on D (full dataset)")
             logger.info("═" * 60)
-            run_script("train_sft.py", "--config", args.config, *debug_flag, *args.overrides)
+            sft_resume_args = (["--resume_sft_checkpoint", args.resume_sft_checkpoint]
+                               if args.resume_sft_checkpoint else [])
+            run_script("train_sft.py", "--config", args.config,
+                       *sft_resume_args, *debug_flag, *args.overrides)
         else:
             logger.info("Skipping SFT (--skip_sft)")
 
-        # ══ Phase 3: Standard DPO on D ════════════════════════════════════
+        # ══ Phase 3: Standard DPO on D ═══════════════════════════════════
         logger.info("═" * 60)
         logger.info("PHASE 3: Baseline — Standard DPO on D (full dataset)")
         logger.info("═" * 60)
         extra_args = ["--sft_model_path", sft_model_path]
+        if args.resume_dpo_checkpoint:
+            extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
         run_script("train_strong.py", "--config", args.config, *extra_args, *debug_flag, *args.overrides)
 
         # ══ Phase 4: Evaluation ═══════════════════════════════════════════
@@ -211,22 +222,25 @@ def main():
             elif args.skip_labeling:
                 logger.info("Skipping labeling (--skip_labeling)")
 
-        # ══ Phase 2b: SFT Strong Model on D_weak ═════════════════════════
+        # ══ Phase 2b: SFT Strong Model on D_weak ═════════════════════════════
         if not args.skip_sft:
             logger.info("═" * 60)
             logger.info("PHASE 2b: WDPO — SFT Strong Model on D_weak → π_θ^SFT")
             logger.info("═" * 60)
+            sft_resume_args = (["--resume_sft_checkpoint", args.resume_sft_checkpoint]
+                               if args.resume_sft_checkpoint else [])
             run_script(
                 "train_sft.py",
                 "--config", args.config,
                 "--pseudo_labels", weak_labels_path,
+                *sft_resume_args,
                 *debug_flag,
                 *args.overrides,
             )
         else:
             logger.info("Skipping SFT on D_weak (--skip_sft)")
 
-        # ══ Phase 3: DPO Strong Model on D_weak ══════════════════════════
+        # ══ Phase 3: DPO Strong Model on D_weak ════════════════════════════
         logger.info("═" * 60)
         logger.info("PHASE 3: WDPO — DPO Strong Model on D_weak")
         logger.info("═" * 60)
@@ -234,6 +248,8 @@ def main():
             "--sft_model_path", sft_model_path,
             "--pseudo_labels", weak_labels_path,
         ]
+        if args.resume_dpo_checkpoint:
+            extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
         run_script("train_strong.py", "--config", args.config, *extra_args, *debug_flag, *args.overrides)
 
         # ══ Phase 4: Evaluation ═══════════════════════════════════════════
@@ -283,22 +299,25 @@ def main():
             elif args.skip_labeling:
                 logger.info("Skipping labeling (--skip_labeling)")
 
-        # ══ Phase 2b: SFT Strong Model on D_weak ═════════════════════════
+        # ══ Phase 2b: SFT Strong Model on D_weak ═════════════════════════════
         if not args.skip_sft:
             logger.info("═" * 60)
             logger.info("PHASE 2b: CWPO — SFT Strong Model on D_weak → π_θ^SFT")
             logger.info("═" * 60)
+            sft_resume_args = (["--resume_sft_checkpoint", args.resume_sft_checkpoint]
+                               if args.resume_sft_checkpoint else [])
             run_script(
                 "train_sft.py",
                 "--config", args.config,
                 "--pseudo_labels", weak_labels_path,
+                *sft_resume_args,
                 *debug_flag,
                 *args.overrides,
             )
         else:
             logger.info("Skipping SFT on D_weak (--skip_sft)")
 
-        # ══ Phase 3: CW-DPO Strong Model on D_weak ═══════════════════════
+        # ══ Phase 3: CW-DPO Strong Model on D_weak ══════════════════════════
         logger.info("═" * 60)
         logger.info("PHASE 3: CWPO — CW-DPO Strong Model on D_weak")
         logger.info("═" * 60)
@@ -306,6 +325,8 @@ def main():
             "--sft_model_path", sft_model_path,
             "--pseudo_labels", weak_labels_path,
         ]
+        if args.resume_dpo_checkpoint:
+            extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
         run_script("train_strong.py", "--config", args.config, *extra_args, *debug_flag, *args.overrides)
 
         # ══ Phase 4: Evaluation ═══════════════════════════════════════════

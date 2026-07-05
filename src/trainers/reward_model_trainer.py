@@ -62,8 +62,18 @@ class RewardModelTrainer:
         self,
         train_dataset: Dataset,
         eval_dataset: Optional[Dataset] = None,
+        resume_from_checkpoint: Optional[str] = None,
     ) -> None:
-        """Train the reward model on D_l."""
+        """Train the reward model on D_l.
+
+        Args:
+            train_dataset:          training dataset
+            eval_dataset:           optional eval dataset
+            resume_from_checkpoint: path to a checkpoint directory produced by _save()
+                                    (e.g. ``outputs/cwpo/reward_model/checkpoint-500``).
+                                    Resumes model weights, optimizer state, and
+                                    skips steps already completed in that run.
+        """
         max_length = self.cfg.get("max_length", 512)
         collator = RewardDataCollator(self.tokenizer, max_length=max_length)
 
@@ -94,13 +104,50 @@ class RewardModelTrainer:
             weight_decay=float(self.cfg.get("weight_decay", 0.01)),
         )
 
-        num_epochs = self.cfg.get("num_train_epochs", 2)
+        num_epochs = self.cfg.get("num_train_epochs", 5)
         num_steps = len(train_loader) * num_epochs
         warmup_steps = int(num_steps * self.cfg.get("warmup_ratio", 0.1))
 
         scheduler = get_cosine_schedule_with_warmup(
             optimizer, num_warmup_steps=warmup_steps, num_training_steps=num_steps
         )
+
+        # ── Resume from checkpoint ─────────────────────────────────────────
+        start_global_step = 0
+        if resume_from_checkpoint is not None:
+            weights_path = os.path.join(resume_from_checkpoint, "model.pt")
+            opt_path     = os.path.join(resume_from_checkpoint, "optimizer_state.pt")
+            state_path   = os.path.join(resume_from_checkpoint, "trainer_state.json")
+
+            if os.path.isfile(weights_path):
+                logger.info(f"Resuming reward model weights from: {weights_path}")
+                state_dict = torch.load(weights_path, map_location=self.device)
+                self.model.load_state_dict(state_dict)
+            else:
+                logger.warning(
+                    f"resume_from_checkpoint set but model.pt not found at {weights_path}. "
+                    "Starting from current model weights."
+                )
+
+            if os.path.isfile(opt_path):
+                logger.info(f"Resuming optimizer state from: {opt_path}")
+                opt_state = torch.load(opt_path, map_location=self.device)
+                optimizer.load_state_dict(opt_state)
+            else:
+                logger.warning(
+                    f"optimizer_state.pt not found at {opt_path}. "
+                    "Optimizer will start fresh (LR schedule may be inconsistent)."
+                )
+
+            if os.path.isfile(state_path):
+                import json as _json
+                with open(state_path) as _f:
+                    _state = _json.load(_f)
+                start_global_step = int(_state.get("global_step", 0))
+                logger.info(
+                    f"Resuming from global_step={start_global_step} "
+                    f"(epoch ≈ {start_global_step // max(1, len(train_loader))})"
+                )
 
         logging_steps = self.cfg.get("logging_steps", 50)
         save_steps = self.cfg.get("save_steps", 500)
@@ -112,7 +159,12 @@ class RewardModelTrainer:
 
         for epoch in range(num_epochs):
             epoch_loss = 0.0
+            steps_this_epoch = 0
             for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
+                global_step += 1
+                # Skip steps already completed before the resume point
+                if global_step <= start_global_step:
+                    continue
                 chosen_ids = batch["chosen_input_ids"].to(self.device)
                 chosen_mask = batch["chosen_attention_mask"].to(self.device)
                 rejected_ids = batch["rejected_input_ids"].to(self.device)
@@ -133,7 +185,7 @@ class RewardModelTrainer:
                 optimizer.zero_grad()
 
                 epoch_loss += loss.item()
-                global_step += 1
+                steps_this_epoch += 1
 
                 if global_step % logging_steps == 0:
                     logger.info(
@@ -142,10 +194,11 @@ class RewardModelTrainer:
                     )
 
                 if global_step % save_steps == 0:
-                    self._save(output_dir, global_step)
+                    self._save(output_dir, global_step, optimizer=optimizer)
 
             logger.info(
-                f"Epoch {epoch+1} avg loss: {epoch_loss/len(train_loader):.4f}"
+                f"Epoch {epoch+1} avg loss: "
+                f"{epoch_loss / max(1, steps_this_epoch):.4f}"
             )
 
             if eval_loader is not None:
@@ -153,7 +206,7 @@ class RewardModelTrainer:
                 logger.info(f"Epoch {epoch+1} eval preference accuracy: {acc:.4f}")
 
         # Final save
-        self._save(output_dir, "final")
+        self._save(output_dir, "final", optimizer=optimizer)
         logger.info(f"Reward model saved to {output_dir}/final")
 
     # ------------------------------------------------------------------ #
@@ -188,12 +241,14 @@ class RewardModelTrainer:
         self.model.train()
         return correct / max(1, total)
 
-    def _save(self, output_dir: str, step) -> None:
+    def _save(self, output_dir: str, step, optimizer=None) -> None:
         """
         R2/RT2 fix: Save full checkpoint — state dict + tokenizer + metadata.
 
         Saves to: output_dir/checkpoint-{step}/
             - model.pt           : ScalarRewardModel state_dict (weights)
+            - optimizer_state.pt : AdamW state dict for exact resume
+            - trainer_state.json : global_step for resume bookkeeping
             - tokenizer_*        : tokenizer files via save_pretrained()
             - metadata.json      : backbone_name, scalar_head config for
                                    standalone reconstruction
@@ -209,13 +264,24 @@ class RewardModelTrainer:
         weights_path = os.path.join(save_path, "model.pt")
         torch.save(self.model.state_dict(), weights_path)
 
-        # 2. Save tokenizer (captures any pad_token / vocab modifications)
+        # 2. Save optimizer state (enables exact resume of LR schedule)
+        if optimizer is not None:
+            opt_path = os.path.join(save_path, "optimizer_state.pt")
+            torch.save(optimizer.state_dict(), opt_path)
+
+        # 3. Save tokenizer (captures any pad_token / vocab modifications)
         try:
             self.tokenizer.save_pretrained(save_path)
         except Exception as e:
             logger.warning(f"Could not save tokenizer: {e}")
 
-        # 3. Save metadata for standalone checkpoint loading
+        # 4. Save trainer state for resume bookkeeping
+        trainer_state = {"global_step": step if isinstance(step, int) else 0}
+        trainer_state_path = os.path.join(save_path, "trainer_state.json")
+        with open(trainer_state_path, "w") as f:
+            json.dump(trainer_state, f, indent=2)
+
+        # 5. Save metadata for standalone checkpoint loading
         hidden_size = self.model.backbone.config.hidden_size
         metadata = {
             "backbone_name": self.backbone_name,
@@ -228,5 +294,5 @@ class RewardModelTrainer:
 
         logger.info(
             f"Saved reward model checkpoint to {save_path} "
-            f"(model.pt + tokenizer + metadata.json)"
+            f"(model.pt + optimizer_state.pt + trainer_state.json + tokenizer + metadata.json)"
         )

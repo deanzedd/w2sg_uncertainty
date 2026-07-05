@@ -52,6 +52,13 @@ def parse_args():
     )
     parser.add_argument("--debug", action="store_true", help="Debug mode with limited data")
     parser.add_argument("--max_samples", type=int, default=None, help="Max training samples")
+    parser.add_argument(
+        "--resume_sft_checkpoint", type=str, default=None,
+        help="Path to a SFT checkpoint directory to resume training from "
+             "(e.g. outputs/baseline_dpo/hh_rlhf/sft_strong/checkpoint-500). "
+             "HF Trainer restores optimizer/scheduler state and skips completed steps. "
+             "Model weights are loaded from the checkpoint directory automatically.",
+    )
     parser.add_argument("overrides", nargs="*", help="Config overrides: key=value")
     return parser.parse_args()
 
@@ -193,6 +200,7 @@ def main():
         train_dataset=train_dataset,
         args=sft_args,
         eval_dataset=eval_ds,
+        resume_from_checkpoint=args.resume_sft_checkpoint,
     )
 
     logger.info(f"SFT complete! Model saved to: {sft_args.output_dir}")
