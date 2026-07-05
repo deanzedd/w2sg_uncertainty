@@ -107,8 +107,11 @@ def build_sft_args(cfg: DictConfig, role: str = "strong") -> SFTConfig:
         gradient_accumulation_steps=sft_cfg.get("gradient_accumulation_steps", 4),
         learning_rate=float(sft_cfg.get("learning_rate", 1e-5)),  # 1e-5 per spec
         lr_scheduler_type=sft_cfg.get("lr_scheduler_type", "cosine"),
-        warmup_ratio=sft_cfg.get("warmup_ratio", 0.1),
-        warmup_steps=sft_cfg.get("warmup_steps", 0),  # 100 per spec; overrides warmup_ratio when > 0
+        # warmup: prefer warmup_steps if set (100 per spec), otherwise use warmup_ratio
+        # HF Trainer: warmup_steps > 0 overrides warmup_ratio automatically,
+        # but we zero-out ratio explicitly to avoid confusion.
+        warmup_steps=sft_cfg.get("warmup_steps", 0),   # 100 per spec (Bảng 9)
+        warmup_ratio=0.0 if sft_cfg.get("warmup_steps", 0) > 0 else sft_cfg.get("warmup_ratio", 0.1),
         weight_decay=sft_cfg.get("weight_decay", 0.05),  # 0.05 per spec
         optim=sft_cfg.get("optim", "paged_adamw_32bit"),  # paged adamw 32bit per spec
         logging_steps=sft_cfg.get("logging_steps", 50),

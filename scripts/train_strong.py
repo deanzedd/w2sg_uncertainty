@@ -18,8 +18,8 @@ Usage:
         --sft_model_path outputs/wdpo/hh_rlhf/sft_strong
 
     # CWPO
-    python scripts/train_strong.py --config configs/cwpo_hh_rlhf.yaml \\
-        --pseudo_labels outputs/cwpo/hh_rlhf/weak_labels/pseudo_labeled.jsonl \\
+    python scripts/train_strong.py --config configs/cwpo_hh_rlhf.yaml /
+        --pseudo_labels outputs/cwpo/hh_rlhf/weak_labels/pseudo_labeled.jsonl /
         --sft_model_path outputs/cwpo/hh_rlhf/sft_strong
 
     # Baseline DPO (no weak labels needed)

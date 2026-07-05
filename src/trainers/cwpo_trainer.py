@@ -309,8 +309,9 @@ def build_cwpo_training_args(cfg: DictConfig) -> DPOConfig:
         gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 4),
         learning_rate=float(train_cfg.get("learning_rate", 5e-6)),
         lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
-        warmup_ratio=train_cfg.get("warmup_ratio", 0.1),
-        warmup_steps=train_cfg.get("warmup_steps", 0),  # 100 per spec; overrides warmup_ratio when > 0
+        # warmup: prefer warmup_steps (100 per spec, Bảng 8); zero-out ratio to avoid conflict
+        warmup_steps=train_cfg.get("warmup_steps", 0),
+        warmup_ratio=0.0 if train_cfg.get("warmup_steps", 0) > 0 else train_cfg.get("warmup_ratio", 0.1),
         weight_decay=train_cfg.get("weight_decay", 0.05),  # 0.05 per spec
         optim=train_cfg.get("optim", "paged_adamw_32bit"),  # paged adamw 32bit per spec
         logging_steps=train_cfg.get("logging_steps", 10),

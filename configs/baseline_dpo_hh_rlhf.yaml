@@ -19,16 +19,26 @@ strong_model_name: facebook/opt-2.7b
 # Change to: device_map: auto  when using Qwen2.5-7B or OPT-6.7b+
 device_map: null
 
+# ── LoRA (paper Bảng 9: r=8, alpha=16, dropout=0.05) ──────────────────────
+use_lora: true          # LoRA for strong model SFT and DPO training
+lora_r: 8               # LoRA rank per paper spec (Bảng 9)
+lora_alpha: 16          # LoRA alpha per paper spec (Bảng 9)
+lora_dropout: 0.05      # LoRA dropout per paper spec (Bảng 9)
+lora_target_modules: null  # null = PEFT auto-detects (q_proj, v_proj, etc.)
+
+# ── Strong Model SFT ────────────────────────────────────────────────────────
 sft:
   output_dir: outputs/baseline_dpo/hh_rlhf/sft_strong
   num_train_epochs: 3                   # 3 epochs per spec (Bảng 9)
-  per_device_train_batch_size: 2
-  gradient_accumulation_steps: 8
-  learning_rate: 1.0e-5                 # 1e-5 per spec
-  weight_decay: 0.05                    # 0.05 per spec
-  optim: paged_adamw_32bit              # paged adamw 32bit per spec
-  warmup_steps: 100                     # 100 steps per spec
-  gradient_checkpointing: true          # True per spec
+  per_device_train_batch_size: 1        # opt-2.7b: 1 to avoid OOM; grad_accum=8 → eff=8
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 8        # effective batch=8 (close to 16 target, limited by VRAM)
+  learning_rate: 1.0e-5                 # 1e-5 per spec (Bảng 9)
+  lr_scheduler_type: cosine             # cosine per spec (Bảng 9)
+  warmup_steps: 100                     # 100 steps per spec (Bảng 9); overrides warmup_ratio
+  weight_decay: 0.05                    # 0.05 per spec (Bảng 9)
+  optim: paged_adamw_32bit              # paged adamw 32bit per spec (Bảng 9)
+  gradient_checkpointing: true          # True per spec (Bảng 9)
 
 training:
   output_dir: outputs/baseline_dpo/hh_rlhf/strong_model
