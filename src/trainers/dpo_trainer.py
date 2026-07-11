@@ -12,11 +12,22 @@ from typing import Dict, List
 
 import datasets as hf_datasets
 from omegaconf import DictConfig
-from trl import DPOConfig
+from trl import DPOConfig, DPOTrainer
 
+from .cwpo_trainer import SafeCheckpointMixin
 from .sft_trainer import _detect_precision
 
 logger = logging.getLogger(__name__)
+
+
+class BaselineDPOTrainer(SafeCheckpointMixin, DPOTrainer):
+    """
+    Thin DPOTrainer subclass that guarantees trainer_state.json is saved with
+    every checkpoint via SafeCheckpointMixin.
+
+    Standard DPO training on D_l (human-labeled data only) — identical to
+    DPOTrainer in behaviour except for the checkpoint guarantee.
+    """
 
 
 def to_hf_dataset(samples) -> hf_datasets.Dataset:

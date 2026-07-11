@@ -37,6 +37,7 @@ Hyperparameters (per CWPO spec):
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import datasets as hf_datasets
@@ -44,6 +45,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import DictConfig
+from transformers.trainer import TRAINER_STATE_NAME
 from trl import DPOConfig, DPOTrainer
 
 from ..losses.dpo_loss import compute_log_probs
@@ -52,7 +54,41 @@ from .sft_trainer import _detect_precision
 logger = logging.getLogger(__name__)
 
 
-class CWPOTrainer(DPOTrainer):
+class SafeCheckpointMixin:
+    """
+    Mixin that guarantees trainer_state.json is always written when a checkpoint
+    is saved, even when PEFT's LoRA save hook bypasses the normal HF Trainer
+    checkpoint path.
+
+    Root cause: PEFT overrides _save_checkpoint and calls model.save_pretrained()
+    directly, which only writes adapter_model.safetensors / adapter_config.json.
+    The call to self.state.save_to_json() inside the original _save_checkpoint
+    may be skipped or happen before PEFT finishes, leaving trainer_state.json
+    absent from the checkpoint directory.
+
+    Fix: call super()._save_checkpoint() first (handles everything HF/PEFT does),
+    then unconditionally write trainer_state.json afterwards.
+    """
+
+    def _save_checkpoint(self, model, trial):
+        # Let HF Trainer (and any PEFT override) do its normal save first.
+        super()._save_checkpoint(model, trial)
+
+        # Then guarantee trainer_state.json exists in every checkpoint dir.
+        # self.state.global_step is the step that was just checkpointed.
+        checkpoint_folder = f"checkpoint-{self.state.global_step}"
+        output_dir = os.path.join(self.args.output_dir, checkpoint_folder)
+        state_path = os.path.join(output_dir, TRAINER_STATE_NAME)
+
+        if not os.path.exists(state_path):
+            self.state.save_to_json(state_path)
+            logger.info(
+                f"[SafeCheckpointMixin] Wrote missing {TRAINER_STATE_NAME} "
+                f"to {output_dir} (global_step={self.state.global_step})"
+            )
+
+
+class CWPOTrainer(SafeCheckpointMixin, DPOTrainer):
     """
     Extends TRL 1.5.x DPOTrainer to implement CW-DPO (Confidence-Weighted DPO).
 

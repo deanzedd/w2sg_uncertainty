@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import torch
 from omegaconf import DictConfig
@@ -63,6 +63,35 @@ def _select_reward_model(cfg) -> str:
     return model_name
 
 logger = logging.getLogger(__name__)
+
+
+# ── Stop strings per dataset ──────────────────────────────────────────────────
+# HH-RLHF / UFB sử dụng format raw text: "\n\nHuman: ...\n\nAssistant:"
+# Model phải dừng trước khi bắt đầu fake Human turn tiếp theo.
+# TL;DR dùng format "SUBREDDIT: ... TL;DR:" → không cần stop string.
+_DATASET_STOP_STRINGS: dict = {
+    "hh_rlhf": ["\n\nHuman:"],
+    "ufb":     ["\n\nHuman:"],
+    "tldr":    [],
+}
+
+
+def _get_stop_strings(cfg) -> List[str]:
+    """
+    Trả về danh sách stop strings phù hợp với dataset.
+    Ưu tiên: eval.stop_strings (manual) > _DATASET_STOP_STRINGS > [].
+    """
+    manual = cfg.get("eval", {}).get("stop_strings", None)
+    if manual is not None:  # cho phép override thủ công từ config
+        logger.info(f"[generate] Using manually configured stop_strings: {manual}")
+        return list(manual)
+    dataset_name = cfg.get("dataset_name", "")
+    stops = _DATASET_STOP_STRINGS.get(dataset_name, [])
+    if stops:
+        logger.info(
+            f"[generate] Auto stop_strings for dataset='{dataset_name}': {stops}"
+        )
+    return stops
 
 
 class Evaluator:
@@ -247,10 +276,24 @@ class Evaluator:
             self.eval_cfg.get("gen_top_p", None) or 1.0
         )
 
+        # EV4 fix: stop_strings để ngăn multi-turn hallucination.
+        #
+        # Vấn đề: HH-RLHF dùng raw-text format "\n\nHuman: ...\n\nAssistant:"
+        # Model học pattern này và tiếp tục sinh ra fake Human turns sau khi
+        # kết thúc assistant response → hallucinate toàn bộ cuộc hội thoại.
+        # Kết quả: 48.7% responses bị hallucinate → reward model chấm điểm thấp
+        # → GRA giảm xuống 0.368 (dưới cả random baseline 0.5).
+        #
+        # Fix: truyền stop_strings=["\n\nHuman:"] vào generate().
+        # HF sẽ truncate output ngay khi gặp chuỗi này.
+        # stop_strings yêu cầu tokenizer được pass vào generate().
+        stop_strings: List[str] = _get_stop_strings(self.cfg)
+
         logger.info(
             f"Generation settings: do_sample={gen_do_sample}, "
             f"temperature={gen_temperature}, top_p={gen_top_p}, "
-            f"max_new_tokens={gen_max_new_tokens}"
+            f"max_new_tokens={gen_max_new_tokens}, "
+            f"stop_strings={stop_strings}"
         )
 
         # Khi device_map="auto", model layers nằm trên nhiều GPU khác nhau.
@@ -273,8 +316,8 @@ class Evaluator:
                 max_length=self.cfg.get("max_prompt_length", 256),
             ).to(input_device)  # move tới GPU chứa embedding layer của model
 
-            outputs = model.generate(
-                **enc,
+            # Xây dựng generate kwargs
+            gen_kwargs = dict(
                 max_new_tokens=gen_max_new_tokens,  # 512 per paper spec
                 do_sample=gen_do_sample,             # True per paper spec
                 temperature=gen_temperature,          # 0.95 per paper spec
@@ -282,6 +325,13 @@ class Evaluator:
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
             )
+            # stop_strings yêu cầu tokenizer được truyền vào generate()
+            # (HF >= 4.40). Chỉ add nếu có stop strings để tránh overhead.
+            if stop_strings:
+                gen_kwargs["stop_strings"] = stop_strings
+                gen_kwargs["tokenizer"] = self.tokenizer
+
+            outputs = model.generate(**enc, **gen_kwargs)
 
             # EV3 fix: decode per-sample using the padded input length.
             #
@@ -297,6 +347,12 @@ class Evaluator:
             for out in outputs:
                 new_tokens = out[padded_input_len:]
                 text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+                # EV4 fix: post-hoc truncation dự phòng nếu stop_strings không
+                # catch được (transformers < 4.40 hoặc tokenizer mismatch).
+                # Cắt tại \n\nHuman: đầu tiên trong decoded text.
+                for stop in stop_strings:
+                    if stop in text:
+                        text = text[: text.index(stop)]
                 responses.append(text.strip())
 
         return responses

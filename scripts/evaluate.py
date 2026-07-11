@@ -93,7 +93,16 @@ def main():
     human_labels = None
     if args.pseudo_labels and os.path.exists(args.pseudo_labels):
         pseudo_labels = BaseWeakLabeler.load(args.pseudo_labels)
-        # D_l samples serve as "human labels" for comparison
+        # PA fix: preference_accuracy measures weak label quality by comparing
+        # pseudo_labels (weak model's chosen/rejected on D_u) against the
+        # ORIGINAL human annotations on D_u (ground truth before relabeling).
+        #
+        # OLD (WRONG): compared D_u pseudo_labels vs D_l human_labels.
+        # D_l and D_u are DISJOINT splits (no shared prompts), so the prompt
+        # lookup in preference_accuracy() always returns total=0 → accuracy=0.
+        #
+        # FIX: load D_u ground truth (original HF chosen labels) as human_labels.
+        # These share the exact same prompts as pseudo_labels → meaningful comparison.
         train_ds = get_dataset(
             cfg.dataset_name,
             split="train",
@@ -101,8 +110,8 @@ def main():
             seed=cfg.seed,
             cache_dir=cfg.get("cache_dir"),
         )
-        labeled_ds, _ = train_ds.get_labeled_unlabeled_split()
-        human_labels = list(labeled_ds)
+        _, unlabeled_ds = train_ds.get_labeled_unlabeled_split()
+        human_labels = list(unlabeled_ds)  # D_u original human labels (ground truth)
 
     # ── Run evaluation ───────────────────────────────────────────────────
     evaluator = Evaluator(

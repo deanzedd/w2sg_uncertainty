@@ -45,9 +45,9 @@ reward_model:
 sft:
   output_dir: outputs/cwpo/hh_rlhf/sft_strong
   num_train_epochs: 3                   # 3 epochs for CWPO per spec (Bảng 9)
-  per_device_train_batch_size: 1        # opt-2.7b: 1 to avoid OOM; grad_accum=8 → eff=8
+  per_device_train_batch_size: 4        # opt-2.7b: 1 to avoid OOM; grad_accum=8 → eff=8
   per_device_eval_batch_size: 4
-  gradient_accumulation_steps: 8        # effective batch=8 (close to 16 target, limited by VRAM)
+  gradient_accumulation_steps: 4        # effective batch=8 (close to 16 target, limited by VRAM)
   learning_rate: 1.0e-5                 # 1e-5 per spec (Bảng 9)
   lr_scheduler_type: cosine             # cosine per spec (Bảng 9)
   warmup_steps: 100                     # 100 steps per spec (Bảng 9); overrides warmup_ratio
@@ -59,8 +59,8 @@ sft:
 training:
   output_dir: outputs/cwpo/hh_rlhf/strong_model
   num_train_epochs: 5
-  per_device_train_batch_size: 1
-  gradient_accumulation_steps: 8
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 1
   learning_rate: 5.0e-6                 # 5e-6 for CWPO per spec
   beta: 0.5                             # 0.5 for CWPO per spec
   weight_decay: 0.05                    # 0.05 per spec

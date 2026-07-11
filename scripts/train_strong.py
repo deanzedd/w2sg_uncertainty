@@ -18,9 +18,7 @@ Usage:
         --sft_model_path outputs/wdpo/hh_rlhf/sft_strong
 
     # CWPO
-    python scripts/train_strong.py --config configs/cwpo_hh_rlhf.yaml /
-        --pseudo_labels outputs/cwpo/hh_rlhf/weak_labels/pseudo_labeled.jsonl /
-        --sft_model_path outputs/cwpo/hh_rlhf/sft_strong
+    python scripts/train_strong.py --config configs/cwpo_hh_rlhf.yaml --pseudo_labels outputs/cwpo/hh_rlhf/weak_labels/pseudo_labeled.jsonl --sft_model_path outputs/cwpo/hh_rlhf/sft_strong
 
     # Baseline DPO (no weak labels needed)
     python scripts/train_strong.py --config configs/baseline_dpo_hh_rlhf.yaml \\
@@ -40,13 +38,12 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import torch
-from trl import DPOTrainer
 
 from src.data import get_dataset
 from src.models import get_model_wrapper
-from src.trainers.wdpo_trainer import WDPODataset, build_wdpo_training_args
+from src.trainers.wdpo_trainer import WDPODataset, WDPOTrainer, build_wdpo_training_args
 from src.trainers.cwpo_trainer import CWPOTrainer, build_cwpo_dataset, build_cwpo_training_args
-from src.trainers.dpo_trainer import BaselineDPODataset, build_baseline_dpo_args
+from src.trainers.dpo_trainer import BaselineDPODataset, BaselineDPOTrainer, build_baseline_dpo_args
 from src.weak_labeler.base_labeler import BaseWeakLabeler
 from src.utils import load_config, print_config, set_seed, setup_logging, init_wandb, finish_wandb
 
@@ -156,7 +153,7 @@ def _train_wdpo(cfg, wrapper, ref_model, pseudo_labels_path: str,
     )
 
     args = build_wdpo_training_args(cfg)
-    trainer = DPOTrainer(
+    trainer = WDPOTrainer(
         model=wrapper.model,
         ref_model=ref_model,
         args=args,
@@ -250,7 +247,7 @@ def _train_baseline_dpo(cfg, wrapper, ref_model, resume_from_checkpoint: str = N
     )
 
     args = build_baseline_dpo_args(cfg)
-    trainer = DPOTrainer(
+    trainer = BaselineDPOTrainer(
         model=wrapper.model,
         ref_model=ref_model,
         args=args,
