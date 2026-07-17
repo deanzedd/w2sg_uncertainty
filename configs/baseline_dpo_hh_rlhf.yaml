@@ -6,6 +6,7 @@ defaults:
 method: baseline_dpo
 dataset_name: hh_rlhf 
 labeled_ratio: 0.3
+max_prompt_length: 512                # HH-RLHF dialogue, filter ở ~400 words
 
 strong_model_name: Qwen/Qwen2.5-1.5B
 # Alternative strong models:
@@ -28,7 +29,7 @@ lora_target_modules: null  # null = PEFT auto-detects (q_proj, v_proj, etc.)
 
 # ── Strong Model SFT ────────────────────────────────────────────────────────
 sft:
-  output_dir: outputs/baseline_dpo/Qwen2.5-1.5B/hh_rlhf/sft_strong
+  output_dir: outputs/baseline_dpo/hh_rlhf/Qwen2.5-1.5B/sft_strong
   num_train_epochs: 3                   # 3 epochs per spec (Bảng 9)
   per_device_train_batch_size: 4        # opt-2.7b: 1 to avoid OOM; grad_accum=8 → eff=8
   per_device_eval_batch_size: 4
@@ -41,10 +42,10 @@ sft:
   gradient_checkpointing: true          # True per spec (Bảng 9)
 
 training:
-  output_dir: outputs/baseline_dpo/Qwen2.5-1.5B/hh_rlhf/strong_model
+  output_dir: outputs/baseline_dpo/hh_rlhf/Qwen2.5-1.5B/strong_model
   num_train_epochs: 5
   per_device_train_batch_size: 1
-  gradient_accumulation_steps: 4   
+  gradient_accumulation_steps: 8   
   learning_rate: 5.0e-6                 # 5e-6 per spec (Bảng 8)
   beta: 0.5                             # 0.5 per spec (Bảng 8)
   weight_decay: 0.05                    # 0.05 per spec
@@ -52,4 +53,7 @@ training:
   warmup_steps: 100                     # 100 steps per spec
   gradient_checkpointing: true          # True per spec
 
-wandb_run_name: baseline-dpo-hh_rlhf-qwen2.5-1.5b
+eval:
+  output_dir: outputs/baseline_dpo/hh_rlhf/Qwen2.5-1.5B/eval
+
+wandb_run_name: server-aTrung-baseline-dpo-hh_rlhf-qwen-0.5b-1.5b

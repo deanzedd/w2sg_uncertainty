@@ -1,0 +1,120 @@
+# MWDPO — Multi-Weak Agreement DPO, HH-RLHF experiment
+# Phase 1: Data Filtering via Multi-Weak Agreement → SFT on D_h → DPO on D_h
+#
+# Usage:
+#   python pipeline/run_pipeline.py --config configs/mwdpo_hh_rlhf.yaml
+#   python pipeline/run_pipeline.py --config configs/mwdpo_hh_rlhf.yaml --debug
+#
+# Two-server setup (sequential reward model training):
+#   Train each reward model individually:
+#   python scripts/train_multi_reward_models.py --config configs/mwdpo_hh_rlhf.yaml --model_idx 0
+#   python scripts/train_multi_reward_models.py --config configs/mwdpo_hh_rlhf.yaml --model_idx 1
+#   python scripts/train_multi_reward_models.py --config configs/mwdpo_hh_rlhf.yaml --model_idx 2
+
+defaults:
+  - base
+
+seed: 123
+method: mwdpo
+dataset_name: hh_rlhf
+labeled_ratio: 0.3
+max_prompt_length: 512                # HH-RLHF dialogue
+
+# ── Model config ────────────────────────────────────────────────────────────
+weak_model_name: Qwen/Qwen2.5-0.5B   # backbone for all k reward models
+strong_model_name: Qwen/Qwen2.5-1.5B
+
+# ── Multi-GPU ──────────────────────────────────────────────────────────────
+device_map: null  # null = single GPU; set "auto" for 7B+ models
+
+# ── LoRA (same spec as CWPO: Bảng 9) ─────────────────────────────────────
+use_lora: true
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules: null
+
+# ── Multi-Weak Ensemble Config ─────────────────────────────────────────────
+multi_weak:
+  num_models: 3                       # k = number of weak reward models
+  # Each model trained with a different seed for diversity.
+  # Seeds must have length == num_models.
+  seeds: [42, 123, 456]
+
+  # Agreement criterion to assign sample to D_h:
+  #   "unanimous"                — all k models must rank the SAME response as winner
+  #   "unanimous_with_threshold" — unanimous AND mean ensemble confidence > threshold
+  agreement_mode: unanimous           # override to "unanimous_with_threshold" to add threshold
+
+  # Only used when agreement_mode = "unanimous_with_threshold"
+  confidence_threshold: 0.8           # mean confidence across ensemble must exceed this
+
+  # Confidence formula (Phase 1: F=1):
+  #   C_weak(x, y_w, y_l) = σ(S(x,y_w) − S(x,y_l))  where S = 1/k Σ π_wi(x,y)
+  # (F=1 means no additional scaling — plain sigmoid of score difference)
+
+  # Output dirs for each reward model checkpoint
+  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed123/reward_models  # base dir; model_i saved to {base}/model_{i}
+
+# ── D_h and D_l label output dirs ─────────────────────────────────────────
+multi_weak_label_output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed123/weak_labels
+
+# Legacy field kept for pipeline compatibility (used only if pseudo_labels arg not given)
+weak_label_output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed123/weak_labels
+
+# ── Reward Model Training (Bradley-Terry, same as CWPO) ────────────────────
+# Each of the k models is trained with these HPs but a different seed.
+reward_model:
+  num_train_epochs: 5
+  per_device_train_batch_size: 8          # paper: 32 via grad_accum
+  gradient_accumulation_steps: 4          # effective = 4×8 = 32
+  learning_rate: 1.0e-5                   # per CWPO spec (Bảng 7)
+  weight_decay: 0.0                       # per CWPO spec
+  warmup_ratio: 0.0
+  bf16: true
+  fp16: false
+  logging_steps: 50
+  save_steps: 500
+  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed123/reward_models  # base; each model appended with /model_{i}
+
+# ── Strong Model SFT on D_h ────────────────────────────────────────────────
+sft:
+  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed123/sft_strong
+  num_train_epochs: 3                   # 3 epochs (same as CWPO spec, Bảng 9)
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4        # effective batch = 16
+  learning_rate: 1.0e-5                 # per spec (Bảng 9)
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  optim: paged_adamw_32bit
+  gradient_checkpointing: true
+
+# ── Phase 1: Standard DPO on D_h ─────────────────────────────────────────
+# Standard DPO (NOT confidence-weighted) on the clean D_h subset.
+# This instills foundational preference recognition on high-agreement data.
+training:
+  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed123/strong_model_phase1
+  num_train_epochs: 5
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 4        # effective batch = 16
+  learning_rate: 5.0e-6                 # per CWPO spec (Bảng 8)
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  optim: paged_adamw_32bit
+  beta: 0.5                             # DPO beta, same as CWPO
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 5000
+  eval_steps: 5000
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
+
+eval:
+  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed123/eval
+
+wandb_run_name: server-aTrung-mwdpo-hh_rlhf-qwen-0.5b-1.5b-phase1

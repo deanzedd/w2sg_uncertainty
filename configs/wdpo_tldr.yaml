@@ -8,6 +8,7 @@ defaults:
 method: wdpo
 dataset_name: tldr
 labeled_ratio: 0.3
+max_prompt_length: 1024               # TL;DR Reddit posts dài, cần 1024 tokens
 
 weak_model_name: facebook/opt-125m
 # WDPO weak model: LM-based implicit reward (SFT → DPO on D_l)
@@ -45,7 +46,7 @@ lora_target_modules: null  # null = PEFT auto-detects (q_proj, v_proj, etc.)
 weak_model_sft:
   output_dir: outputs/wdpo/tldr/weak_model_sft
   num_train_epochs: 5                   # paper Bảng 7: 5 epochs
-  per_device_train_batch_size: 16       # paper Bảng 7: 32 (OOM) → 16
+  per_device_train_batch_size: 64       # paper Bảng 7: 32 (OOM) → 16
   gradient_accumulation_steps: 8        # paper Bảng 7: grad_accum=8
   learning_rate: 1.0e-5                 # paper Bảng 7: 1e-5
   weight_decay: 0.0                     # paper Bảng 7: Adam (không có weight decay)
@@ -69,7 +70,7 @@ weak_model_dpo:
 sft:
   output_dir: outputs/wdpo/tldr/sft_strong
   num_train_epochs: 3                   # 3 epochs per spec (Bảng 9)
-  per_device_train_batch_size: 1        # opt-2.7b: 1 to avoid OOM; grad_accum=8 → eff=8
+  per_device_train_batch_size: 4        # opt-2.7b: 1 to avoid OOM; grad_accum=8 → eff=8
   per_device_eval_batch_size: 4
   gradient_accumulation_steps: 8        # effective batch=8 (close to 16 target, limited by VRAM)
   learning_rate: 1.0e-5                 # 1e-5 per spec (Bảng 9)
@@ -83,7 +84,7 @@ sft:
 training:
   output_dir: outputs/wdpo/tldr/strong_model
   num_train_epochs: 5
-  per_device_train_batch_size: 1
+  per_device_train_batch_size: 4
   gradient_accumulation_steps: 8
   learning_rate: 5.0e-6                 # 5e-6 per spec (Bảng 8)
   beta: 0.5                             # 0.5 per spec (Bảng 8)

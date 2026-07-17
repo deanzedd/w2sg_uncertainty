@@ -65,6 +65,15 @@ def _select_reward_model(cfg) -> str:
 logger = logging.getLogger(__name__)
 
 
+# ── Max prompt length per dataset (evaluation generation) ───────────────────
+# HH-RLHF / UFB: dialogue ~400 words → 512 tokens đủ
+# TL;DR         : Reddit posts ~200-850 words → cần 1024 tokens
+_DATASET_MAX_PROMPT_LEN: dict = {
+    "hh_rlhf": 512,
+    "ufb":     512,
+    "tldr":    1024,
+}
+
 # ── Stop strings per dataset ──────────────────────────────────────────────────
 # HH-RLHF / UFB sử dụng format raw text: "\n\nHuman: ...\n\nAssistant:"
 # Model phải dừng trước khi bắt đầu fake Human turn tiếp theo.
@@ -92,6 +101,30 @@ def _get_stop_strings(cfg) -> List[str]:
             f"[generate] Auto stop_strings for dataset='{dataset_name}': {stops}"
         )
     return stops
+
+
+def _get_eval_max_prompt_length(cfg) -> int:
+    """
+    Chọn max_prompt_length cho evaluation generation theo thứ tự ưu tiên:
+      1. eval.max_prompt_length (manual override trong config)
+      2. _DATASET_MAX_PROMPT_LEN theo dataset_name
+      3. cfg.max_prompt_length (training value)
+      4. Fallback = 512
+    """
+    # 1. Eval-specific override
+    eval_override = cfg.get("eval", {}).get("max_prompt_length", None)
+    if eval_override is not None:
+        return int(eval_override)
+    # 2. Auto-select theo dataset
+    dataset_name = cfg.get("dataset_name", "")
+    auto = _DATASET_MAX_PROMPT_LEN.get(dataset_name, None)
+    if auto is not None:
+        logger.info(
+            f"[generate] Auto max_prompt_length for dataset='{dataset_name}': {auto}"
+        )
+        return auto
+    # 3. Fallback tới training config hoặc 512
+    return int(cfg.get("max_prompt_length", None) or 512)
 
 
 class Evaluator:
@@ -313,7 +346,7 @@ class Evaluator:
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
-                max_length=self.cfg.get("max_prompt_length", 256),
+                max_length=_get_eval_max_prompt_length(self.cfg),
             ).to(input_device)  # move tới GPU chứa embedding layer của model
 
             # Xây dựng generate kwargs

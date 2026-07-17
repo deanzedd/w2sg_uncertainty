@@ -116,6 +116,13 @@ class TLDRDataset(BasePreferenceDataset):
         if not prompt or not chosen or not rejected:
             return None
 
+        # ── Bug 1 fix: đảm bảo prompt luôn kết thúc bằng "TL;DR:" ────────
+        # Model phải nhìn thấy "TL;DR:" để biết task là summarization.
+        # CarperAI mirror hầu hết đã có suffix này, nhưng thêm check phòng thủ
+        # để tránh trường hợp model sinh continuation thay vì summary.
+        if not prompt.endswith("TL;DR:"):
+            prompt = prompt.rstrip() + "\nTL;DR:"
+
         # ── Paper spec: filter out samples with more than 1024 tokens ─────
         total_words = _word_count(prompt + " " + chosen + " " + rejected)
         if total_words > self.max_length:

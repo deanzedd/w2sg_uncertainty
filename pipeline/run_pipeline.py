@@ -23,6 +23,13 @@ Chains all phases automatically based on the `method` field in config:
     Phase 3:  CW-DPO strong model on D_weak  → π_θ^CW-DPO
     Phase 4:  Evaluation (GRA)
 
+  MWDPO pipeline (Phase 1 — Multi-Weak Agreement DPO):
+    Phase 1a: Train k scalar reward models on D_l (different seeds)
+    Phase 1b: Multi-weak labeling of D_u → D_h (agreement) + D_l (disagreement)
+    Phase 2a: SFT strong model on D_h    → π_θ^SFT
+    Phase 2b: Standard DPO on D_h       → π_θ^DPO  (Phase 1 of proposal)
+    Phase 3:  Evaluation (GRA)
+
   Baseline DPO pipeline:
     Phase 1a: SFT strong model on D (toàn bộ dataset)
     Phase 3:  Standard DPO strong model on D
@@ -31,24 +38,17 @@ Chains all phases automatically based on the `method` field in config:
 Usage:
     python pipeline/run_pipeline.py --config configs/cwpo_hh_rlhf.yaml
     python pipeline/run_pipeline.py --config configs/wdpo_hh_rlhf.yaml
+    python pipeline/run_pipeline.py --config configs/mwdpo_hh_rlhf.yaml
     python pipeline/run_pipeline.py --config configs/baseline_dpo_hh_rlhf.yaml
 
-    # With Qwen2.5-7B strong model (multi-GPU, LoRA):
-    conda activate w2sg_uncer
-    cd w2sg_uncertainty
-    python pipeline/run_pipeline.py --config configs/wdpo_hh_rlhf.yaml \\
-        strong_model_name=Qwen/Qwen2.5-7B \\
-        use_lora=true lora_r=16 lora_alpha=32 \\
-        sft.gradient_checkpointing=true
-
     # Debug mode (small data, fast)
-    python pipeline/run_pipeline.py --config configs/cwpo_hh_rlhf.yaml --debug
+    python pipeline/run_pipeline.py --config configs/mwdpo_hh_rlhf.yaml --debug
 
     # Skip phases already completed
-    python pipeline/run_pipeline.py --config configs/wdpo_hh_rlhf.yaml \\
-        --skip_weak_model \\
-        --pseudo_labels outputs/wdpo/hh_rlhf/weak_labels/pseudo_labeled.jsonl \\
-        --sft_model_path outputs/wdpo/hh_rlhf/sft_strong
+    python pipeline/run_pipeline.py --config configs/mwdpo_hh_rlhf.yaml \\
+        --skip_reward_model \\
+        --pseudo_labels outputs/mwdpo/hh_rlhf/.../weak_labels/d_high/pseudo_labeled.jsonl \\
+        --sft_model_path outputs/mwdpo/hh_rlhf/.../sft_strong
 """
 
 import argparse
@@ -67,29 +67,29 @@ SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "scripts")
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run full WDPO/CWPO pipeline")
+    parser = argparse.ArgumentParser(description="Run full WDPO/CWPO/MWDPO pipeline")
     parser.add_argument("--config", required=True)
     parser.add_argument("--debug", action="store_true")
     # ── Phase skips ──────────────────────────────────────────────────────
     parser.add_argument("--skip_sft", action="store_true",
-                        help="Skip SFT phase (Phase 2b cho WDPO/CWPO, Phase 1a cho Baseline)")
+                        help="Skip SFT phase (Phase 2a for MWDPO, Phase 2b for WDPO/CWPO)")
     parser.add_argument("--skip_weak_model", action="store_true",
                         help="Skip weak model training phase (WDPO Phase 1b+1c)")
     parser.add_argument("--skip_reward_model", action="store_true",
-                        help="Skip reward model training (CWPO Phase 1b)")
+                        help="Skip reward model training (CWPO Phase 1b; MWDPO Phase 1a)")
     parser.add_argument("--skip_labeling", action="store_true",
-                        help="Skip weak labeling phase (Phase 2)")
+                        help="Skip weak labeling phase (Phase 2 / Phase 1b for MWDPO)")
     # ── Pre-computed paths ────────────────────────────────────────────
     parser.add_argument("--pseudo_labels", type=str, default=None,
-                        help="Pre-computed D_weak path (skips labeling + SFT on D_weak)")
+                        help="Pre-computed D_h (MWDPO) or D_weak (WDPO/CWPO) path")
     parser.add_argument("--sft_model_path", type=str, default=None,
-                        help="Pre-trained SFT model path (skips SFT on D_weak / D)")
+                        help="Pre-trained SFT model path (skips SFT)")
     parser.add_argument("--weak_model_path", type=str, default=None,
                         help="Pre-trained π_w^* path (WDPO, skips weak model training)")
     parser.add_argument("--weak_ref_path", type=str, default=None,
                         help="Pre-trained π_w^SFT path used as DPO ref (WDPO)")
     parser.add_argument("--reward_model_path", type=str, default=None,
-                        help="Pre-trained reward model path (CWPO, skips training)")
+                        help="Pre-trained reward model path (CWPO single model, skips training)")
     # ── Resume checkpoints ───────────────────────────────────────────
     parser.add_argument("--resume_sft_checkpoint", type=str, default=None,
                         help="Resume SFT training from this checkpoint directory")
@@ -348,7 +348,99 @@ def main():
         logger.info("═" * 60)
         return
 
-    raise ValueError(f"Unknown method: '{method}'. Choose: wdpo, cwpo, baseline_dpo")
+    # ════════════════════════════════════════════════════════════════════
+    # MWDPO — Multi-Weak Agreement DPO (Phase 1)
+    # ════════════════════════════════════════════════════════════════════
+    if method == "mwdpo":
+        mw_cfg = cfg.get("multi_weak", {})
+        rm_base_dir = mw_cfg.get(
+            "output_dir",
+            cfg.get("reward_model", {}).get("output_dir", "outputs/mwdpo/reward_models")
+        )
+        label_base_dir = cfg.get("multi_weak_label_output_dir",
+                                  cfg.get("weak_label_output_dir", "outputs/mwdpo/weak_labels"))
+
+        # D_h is the high-agreement labeled subset used for SFT + DPO Phase 1
+        d_high_path = args.pseudo_labels or os.path.join(
+            label_base_dir, "d_high", "pseudo_labeled.jsonl"
+        )
+
+        # ══ Phase 1a: Train k Reward Models on D_l ══════════════════════
+        if not args.skip_reward_model:
+            logger.info("═" * 60)
+            logger.info("PHASE 1a: MWDPO — Train k Reward Models on D_l (Bradley-Terry)")
+            logger.info("═" * 60)
+            run_script("train_multi_reward_models.py", "--config", args.config,
+                       *debug_flag, *args.overrides)
+        else:
+            logger.info("Skipping MWDPO reward model training (--skip_reward_model)")
+
+        # ══ Phase 1b: Multi-Weak Labeling D_u → D_h ∪ D_l ══════════════
+        if not args.skip_labeling and not args.pseudo_labels:
+            logger.info("═" * 60)
+            logger.info(
+                "PHASE 1b: MWDPO — Multi-Weak Labeling D_u → D_h (agreement) + D_l (disagreement)"
+            )
+            logger.info("═" * 60)
+            run_script("label_multi_weak.py", "--config", args.config,
+                       *debug_flag, *args.overrides)
+        else:
+            if args.pseudo_labels:
+                logger.info(f"Using pre-computed D_h: {args.pseudo_labels}")
+            elif args.skip_labeling:
+                logger.info("Skipping multi-weak labeling (--skip_labeling)")
+
+        # ══ Phase 2a: SFT Strong Model on D_h ═══════════════════════════
+        if not args.skip_sft:
+            logger.info("═" * 60)
+            logger.info("PHASE 2a: MWDPO — SFT Strong Model on D_h → π_θ^SFT")
+            logger.info("═" * 60)
+            sft_resume_args = (["--resume_sft_checkpoint", args.resume_sft_checkpoint]
+                               if args.resume_sft_checkpoint else [])
+            run_script(
+                "train_sft.py",
+                "--config", args.config,
+                "--pseudo_labels", d_high_path,
+                *sft_resume_args,
+                *debug_flag,
+                *args.overrides,
+            )
+        else:
+            logger.info("Skipping SFT on D_h (--skip_sft)")
+
+        # ══ Phase 2b: Standard DPO on D_h (Phase 1 of proposal) ════════
+        logger.info("═" * 60)
+        logger.info("PHASE 2b: MWDPO Phase 1 — Standard DPO on D_h")
+        logger.info("═" * 60)
+        extra_args = [
+            "--sft_model_path", sft_model_path,
+            "--pseudo_labels", d_high_path,
+        ]
+        if args.resume_dpo_checkpoint:
+            extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
+        run_script("train_strong.py", "--config", args.config, *extra_args,
+                   *debug_flag, *args.overrides)
+
+        # ══ Phase 3: Evaluation ════════════════════════════════════════
+        logger.info("═" * 60)
+        logger.info("PHASE 3: MWDPO — Evaluation (GRA)")
+        logger.info("═" * 60)
+        eval_args = [
+            "--aligned_model_path", output_dir,
+            "--sft_model_path", sft_model_path,
+        ]
+        if args.run_gpt4:
+            eval_args.append("--run_gpt4")
+        if os.path.exists(d_high_path):
+            eval_args += ["--pseudo_labels", d_high_path]
+        run_script("evaluate.py", "--config", args.config, *eval_args, *args.overrides)
+
+        logger.info("═" * 60)
+        logger.info("Pipeline complete for method=mwdpo!")
+        logger.info("═" * 60)
+        return
+
+    raise ValueError(f"Unknown method: '{method}'. Choose: wdpo, cwpo, mwdpo, baseline_dpo")
 
 
 if __name__ == "__main__":

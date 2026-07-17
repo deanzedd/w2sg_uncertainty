@@ -110,9 +110,10 @@ def main():
 
     # ── Determine training data source ───────────────────────────────────
     if args.pseudo_labels:
-        # ── Phase 2b (WDPO/CWPO): SFT on D_weak ─────────────────────────
-        logger.info(f"SFT Phase 2b: training on D_weak from {args.pseudo_labels}")
-        init_wandb(cfg, tags=["sft", "d_weak", cfg.dataset_name, cfg.strong_model_name])
+        # ── Phase 2b (WDPO/CWPO/MWDPO): SFT on D_weak / D_h ─────────────
+        phase_label = "D_h" if method == "mwdpo" else "D_weak"
+        logger.info(f"SFT: training on {phase_label} from {args.pseudo_labels}")
+        init_wandb(cfg, tags=["sft", phase_label.lower(), cfg.dataset_name, cfg.strong_model_name])
 
         max_samples = args.max_samples if args.debug else None
         train_dataset = _load_pseudo_labeled_as_sft_dataset(args.pseudo_labels, max_samples)

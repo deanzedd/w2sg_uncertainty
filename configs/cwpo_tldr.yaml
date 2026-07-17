@@ -8,6 +8,7 @@ defaults:
 method: cwpo
 dataset_name: tldr
 labeled_ratio: 0.3
+max_prompt_length: 1024               # TL;DR Reddit posts dài, cần 1024 tokens
 
 weak_model_name: facebook/opt-125m
 # CWPO weak model: backbone + scalar head (reward model style)

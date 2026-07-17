@@ -8,13 +8,14 @@ defaults:
 method: wdpo
 dataset_name: hh_rlhf
 labeled_ratio: 0.3
+max_prompt_length: 512                # HH-RLHF dialogue, filter ở ~400 words
 
-weak_model_name: facebook/opt-125m
+weak_model_name: Qwen/Qwen2.5-0.5B
 # WDPO weak model: LM-based implicit reward (SFT → DPO on D_l)
 # Qwen2.5-0.5B alternative:
 # weak_model_name: Qwen/Qwen2.5-0.5B
 
-strong_model_name: facebook/opt-2.7b
+strong_model_name: Qwen/Qwen2.5-1.5B
 # Alternative strong models:
 #   facebook/opt-2.7b        → device_map: null (single GPU, ~5GB)
 #   facebook/opt-6.7b        → device_map: auto (multi-GPU)
@@ -37,7 +38,7 @@ lora_target_modules: null  # null = PEFT auto-detects (q_proj, v_proj, etc.)
 # ── WDPO Weak Model Phase 1: SFT on D_l (lora_rank=0 per paper Bảng 7) ────
 # train_weak_model.py forces use_lora=False for weak model automatically
 weak_model_sft:
-  output_dir: outputs/wdpo/hh_rlhf/weak_model_sft
+  output_dir: outputs/wdpo/hh_rlhf/Qwen2.5-1.5B/weak_model_sft
   num_train_epochs: 5                   # paper Bảng 7: 5 epochs
   per_device_train_batch_size: 16       # paper Bảng 7: 32 (OOM) → 16, grad_accum=8 eff=128
   gradient_accumulation_steps: 8        # paper Bảng 7: grad_accum=8
@@ -49,7 +50,7 @@ weak_model_sft:
 # ── WDPO Weak Model Phase 2: DPO on D_l (lora_rank=0 per paper Bảng 7) ────
 # train_weak_model.py forces use_lora=False for weak model automatically
 weak_model_dpo:
-  output_dir: outputs/wdpo/hh_rlhf/weak_model_dpo
+  output_dir: outputs/wdpo/hh_rlhf/Qwen2.5-1.5B/weak_model_dpo
   num_train_epochs: 5                   # paper Bảng 7: 5 epochs
   per_device_train_batch_size: 16       # paper Bảng 7: 32 (OOM) → 16
   gradient_accumulation_steps: 8        # paper Bảng 7: grad_accum=8
@@ -61,11 +62,11 @@ weak_model_dpo:
 
 # ── Strong Model SFT ────────────────────────────────────────────────────────
 sft:
-  output_dir: outputs/wdpo/hh_rlhf/sft_strong
+  output_dir: outputs/wdpo/hh_rlhf/Qwen2.5-1.5B/sft_strong
   num_train_epochs: 3                   # 3 epochs per spec (Bảng 9)
-  per_device_train_batch_size: 1        # opt-2.7b: 1 to avoid OOM; grad_accum=8 → eff=8
+  per_device_train_batch_size: 4        # opt-2.7b: 1 to avoid OOM; grad_accum=8 → eff=8
   per_device_eval_batch_size: 4
-  gradient_accumulation_steps: 8        # effective batch=8 (close to 16 target, limited by VRAM)
+  gradient_accumulation_steps: 4        # effective batch=8 (close to 16 target, limited by VRAM)
   learning_rate: 1.0e-5                 # 1e-5 per spec (Bảng 9)
   lr_scheduler_type: cosine             # cosine per spec (Bảng 9)
   warmup_steps: 100                     # 100 steps per spec (Bảng 9); overrides warmup_ratio
@@ -75,7 +76,7 @@ sft:
 
 # ── Strong Model DPO (Phase 3) ───────────────────────────────────────────────
 training:
-  output_dir: outputs/wdpo/hh_rlhf/strong_model
+  output_dir: outputs/wdpo/hh_rlhf/Qwen2.5-1.5B/strong_model
   num_train_epochs: 5
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 8
@@ -86,6 +87,9 @@ training:
   warmup_steps: 100                     # 100 steps per spec (Bảng 8)
   gradient_checkpointing: true          # True per spec (Bảng 8)
 
-weak_label_output_dir: outputs/wdpo/hh_rlhf/weak_labels
+eval:
+  output_dir: outputs/wdpo/hh_rlhf/Qwen2.5-1.5B/eval
 
-wandb_run_name: wdpo-hh_rlhf-opt125m-opt2.7b
+weak_label_output_dir: outputs/wdpo/hh_rlhf/Qwen2.5-1.5B/weak_labels
+
+wandb_run_name: server-aTrung-wdpo-hh_rlhf-qwen-0.5b-1.5b

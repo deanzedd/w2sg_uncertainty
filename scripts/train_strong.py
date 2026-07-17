@@ -119,10 +119,12 @@ def main():
         _train_wdpo(cfg, wrapper, ref_model, args.pseudo_labels, args.resume_dpo_checkpoint)
     elif method == "cwpo":
         _train_cwpo(cfg, wrapper, ref_model, args.pseudo_labels, args.resume_dpo_checkpoint)
+    elif method == "mwdpo":
+        _train_mwdpo(cfg, wrapper, ref_model, args.pseudo_labels, args.resume_dpo_checkpoint)
     elif method == "baseline_dpo":
         _train_baseline_dpo(cfg, wrapper, ref_model, args.resume_dpo_checkpoint)
     else:
-        raise ValueError(f"Unknown method: '{method}'. Choose: wdpo, cwpo, baseline_dpo")
+        raise ValueError(f"Unknown method: '{method}'. Choose: wdpo, cwpo, mwdpo, baseline_dpo")
 
     finish_wandb()
     logger.info("Strong model training complete!")
@@ -219,6 +221,63 @@ def _train_cwpo(cfg, wrapper, ref_model, pseudo_labels_path: str,
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     trainer.save_model(args.output_dir)
     logger.info(f"CWPO strong model saved to {args.output_dir}")
+
+
+def _train_mwdpo(cfg, wrapper, ref_model, pseudo_labels_path: str,
+                 resume_from_checkpoint: str = None):
+    """
+    Phase 1 MWDPO: Standard DPO on D_h (high-agreement subset).
+
+    D_h = high-agreement pseudo-labeled data from Phase 1b (label_multi_weak.py).
+    The path should point to the D_h pseudo_labeled.jsonl file.
+    Reference model = π_θ^SFT (frozen copy of the SFT-on-D_h checkpoint).
+
+    Note: Phase 1 uses STANDARD DPO (not confidence-weighted). The
+    confidence_weight field in the data is stored but not used here.
+    (Phase 2 will use it with C_combined weighting.)
+    """
+    if not pseudo_labels_path:
+        raise ValueError(
+            "--pseudo_labels is required for MWDPO training. "
+            "Pass the D_h pseudo_labeled.jsonl path from label_multi_weak.py."
+        )
+
+    logger.info(f"[MWDPO Phase 1] Loading D_h from: {pseudo_labels_path}")
+    pseudo_labeled = BaseWeakLabeler.load(pseudo_labels_path)
+    logger.info(f"D_h size: {len(pseudo_labeled)}")
+
+    # Log D_h statistics
+    conf_weights = [s.get("confidence_weight", 1.0) for s in pseudo_labeled]
+    in_d_high = sum(1 for s in pseudo_labeled if s.get("in_d_high", True))
+    logger.info(
+        f"[MWDPO Phase 1] D_h stats — "
+        f"min_conf: {min(conf_weights):.4f}, "
+        f"max_conf: {max(conf_weights):.4f}, "
+        f"mean_conf: {sum(conf_weights)/len(conf_weights):.4f}, "
+        f"in_d_high: {in_d_high}/{len(pseudo_labeled)}"
+    )
+
+    # Standard DPO on D_h — reuses WDPOTrainer (identical to standard DPO)
+    train_dataset = WDPODataset(
+        pseudo_labeled, wrapper.tokenizer,
+        max_length=cfg.get("max_length", 512),
+        max_prompt_length=cfg.get("max_prompt_length", 256),
+    )
+
+    # Reuse WDPO training args (standard DPO)
+    args = build_wdpo_training_args(cfg)
+    trainer = WDPOTrainer(
+        model=wrapper.model,
+        ref_model=ref_model,
+        args=args,
+        train_dataset=train_dataset.to_hf(),
+        processing_class=wrapper.tokenizer,
+    )
+    if resume_from_checkpoint:
+        logger.info(f"Resuming MWDPO Phase 1 DPO from checkpoint: {resume_from_checkpoint}")
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    trainer.save_model(args.output_dir)
+    logger.info(f"[MWDPO Phase 1] Strong model saved to {args.output_dir}")
 
 
 def _train_baseline_dpo(cfg, wrapper, ref_model, resume_from_checkpoint: str = None):

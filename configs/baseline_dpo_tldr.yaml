@@ -5,6 +5,7 @@ defaults:
 method: baseline_dpo
 dataset_name: tldr
 labeled_ratio: 0.3
+max_prompt_length: 1024               # TL;DR Reddit posts dài, cần 1024 tokens
 
 strong_model_name: facebook/opt-1.3b
 # Alternative strong models:
