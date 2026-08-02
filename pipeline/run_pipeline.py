@@ -30,6 +30,25 @@ Chains all phases automatically based on the `method` field in config:
     Phase 2b: Standard DPO on D_h       → π_θ^DPO  (Phase 1 of proposal)
     Phase 3:  Evaluation (GRA)
 
+  MWDPO_bootstrap_calibration pipeline (1a + 2a extensions):
+    Phase 1a: Train ONE MultiHeadRewardModel on D_l
+              — shared backbone + K bootstrap heads (Plan 1a)
+              — each head trained on per-batch bootstrap resample of D_l
+              → produces K decorrelated reward estimators at ~1× backbone cost
+    Phase 1b: Calibrate + Label D_u → D_h / D_l
+              — fit per-head temperatures T_k on D_l val split (Plan 2a)
+              — aggregate calibrated probabilities p_k=σ(margin_k/T_k)
+              — unanimous agreement filter (same as MWDPO) on calibrated votes
+              → D_h: high-agreement, calibrated-confidence subset
+    Phase 2a: SFT strong model on D_h        → π_θ^SFT   (unchanged from MWDPO)
+    Phase 2b: Standard DPO on D_h            → π_θ^DPO   (unchanged from MWDPO)
+    Phase 3:  Evaluation (GRA)              (unchanged from MWDPO)
+
+    Ablation options (set in config bootstrap_calibration section):
+      use_bootstrap: false  → all heads see full batch (no resampling), multi-init only
+      use_calibration: false → T_k = 1.0 (raw margins, same as current MWDPO)
+      Both false + num_heads=1 → reproduces MWDPO k=1 (degenerate baseline)
+
   Baseline DPO pipeline:
     Phase 1a: SFT strong model on D (toàn bộ dataset)
     Phase 3:  Standard DPO strong model on D
@@ -39,12 +58,45 @@ Usage:
     python pipeline/run_pipeline.py --config configs/cwpo_hh_rlhf.yaml
     python pipeline/run_pipeline.py --config configs/wdpo_hh_rlhf.yaml
     python pipeline/run_pipeline.py --config configs/mwdpo_hh_rlhf.yaml
+    python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf.yaml
     python pipeline/run_pipeline.py --config configs/baseline_dpo_hh_rlhf.yaml
 
     # Debug mode (small data, fast)
     python pipeline/run_pipeline.py --config configs/mwdpo_hh_rlhf.yaml --debug
+    python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf.yaml --debug
 
-    # Skip phases already completed
+    # MWDPO_bootstrap_calibration — full run (both 1a and 2a enabled by default)
+    python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf.yaml
+
+    # Ablation: bootstrap only, no calibration (set use_calibration=false in config)
+    python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf.yaml \\
+        bootstrap_calibration.use_calibration=false
+
+    # Ablation: calibration only, no bootstrap (set use_bootstrap=false in config)
+    python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf.yaml \\
+        bootstrap_calibration.use_bootstrap=false
+
+    # Skip reward model training (already trained), run labeling + SFT + DPO:
+    python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf.yaml \\
+        --skip_reward_model
+
+    # Skip reward model + labeling (use pre-computed D_h), run SFT + DPO only:
+    python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf.yaml \\
+        --skip_reward_model \\
+        --pseudo_labels outputs/mwdpo_bc/hh_rlhf/.../weak_labels/d_high/pseudo_labeled.jsonl
+
+    # Skip SFT (pre-trained SFT checkpoint available):
+    python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf.yaml \\
+        --skip_reward_model --skip_sft \\
+        --pseudo_labels outputs/mwdpo_bc/hh_rlhf/.../weak_labels/d_high/pseudo_labeled.jsonl \\
+        --sft_model_path outputs/mwdpo_bc/hh_rlhf/.../sft_strong
+
+    # Use explicit pre-trained MultiHeadRewardModel checkpoint:
+    python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf.yaml \\
+        --skip_reward_model \\
+        --reward_model_path outputs/mwdpo_bc/hh_rlhf/.../reward_model/checkpoint-final
+
+    # MWDPO (original) — skip phases already completed
     python pipeline/run_pipeline.py --config configs/mwdpo_hh_rlhf.yaml \\
         --skip_reward_model \\
         --pseudo_labels outputs/mwdpo/hh_rlhf/.../weak_labels/d_high/pseudo_labeled.jsonl \\
@@ -67,7 +119,9 @@ SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "scripts")
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run full WDPO/CWPO/MWDPO pipeline")
+    parser = argparse.ArgumentParser(
+        description="Run full WDPO/CWPO/MWDPO/MWDPO_bootstrap_calibration pipeline"
+    )
     parser.add_argument("--config", required=True)
     parser.add_argument("--debug", action="store_true")
     # ── Phase skips ──────────────────────────────────────────────────────
@@ -89,7 +143,8 @@ def parse_args():
     parser.add_argument("--weak_ref_path", type=str, default=None,
                         help="Pre-trained π_w^SFT path used as DPO ref (WDPO)")
     parser.add_argument("--reward_model_path", type=str, default=None,
-                        help="Pre-trained reward model path (CWPO single model, skips training)")
+                        help="Pre-trained reward model path (CWPO single model; or "
+                             "MultiHeadRewardModel checkpoint-final dir for mwdpo_bootstrap_calibration)")
     # ── Resume checkpoints ───────────────────────────────────────────
     parser.add_argument("--resume_sft_checkpoint", type=str, default=None,
                         help="Resume SFT training from this checkpoint directory")
@@ -440,7 +495,133 @@ def main():
         logger.info("═" * 60)
         return
 
-    raise ValueError(f"Unknown method: '{method}'. Choose: wdpo, cwpo, mwdpo, baseline_dpo")
+    # ════════════════════════════════════════════════════════════════════
+    # MWDPO_bootstrap_calibration — Multi-Head Bootstrap + Calibration DPO
+    # ════════════════════════════════════════════════════════════════════
+    if method == "mwdpo_bootstrap_calibration":
+        bc_cfg = cfg.get("bootstrap_calibration", {})
+
+        # Reward model checkpoint dir (one multi-head model, not K separate)
+        bc_rm_dir = bc_cfg.get(
+            "output_dir",
+            cfg.get("reward_model", {}).get("output_dir",
+                    "outputs/mwdpo_bootstrap_calibration/reward_model"),
+        )
+        label_base_dir = cfg.get(
+            "multi_weak_label_output_dir",
+            cfg.get("weak_label_output_dir",
+                    "outputs/mwdpo_bootstrap_calibration/weak_labels"),
+        )
+
+        # D_h is the high-agreement subset used for SFT + DPO
+        d_high_path = args.pseudo_labels or os.path.join(
+            label_base_dir, "d_high", "pseudo_labeled.jsonl"
+        )
+
+        # ══ Phase 1a: Train MultiHeadRewardModel on D_l ══════════════════
+        if not args.skip_reward_model:
+            checkpoint_dir = args.reward_model_path or os.path.join(
+                bc_rm_dir, "checkpoint-final"
+            )
+            if os.path.exists(os.path.join(checkpoint_dir, "model.pt")):
+                logger.info(
+                    f"MultiHeadRewardModel already exists at {checkpoint_dir}. Skipping. "
+                    "(Delete checkpoint-final to retrain.)"
+                )
+            else:
+                logger.info("═" * 60)
+                logger.info(
+                    "PHASE 1a: MWDPO_BC — Train MultiHeadRewardModel on D_l "
+                    "(shared backbone + K bootstrap heads)"
+                )
+                logger.info("═" * 60)
+                run_script(
+                    "train_bootstrap_reward_model.py",
+                    "--config", args.config,
+                    *debug_flag, *args.overrides,
+                )
+        else:
+            logger.info("Skipping MWDPO_BC reward model training (--skip_reward_model)")
+
+        # ══ Phase 1b: Calibrate + Label D_u → D_h ∪ D_l ═════════════════
+        if not args.skip_labeling and not args.pseudo_labels:
+            logger.info("═" * 60)
+            logger.info(
+                "PHASE 1b: MWDPO_BC — Calibrate T_k on D_l val, "
+                "then label D_u → D_h (agreement) + D_l (disagreement)"
+            )
+            logger.info("═" * 60)
+            extra = []
+            if args.reward_model_path:
+                extra += ["--checkpoint_dir", args.reward_model_path]
+            run_script(
+                "label_bootstrap_calibration.py",
+                "--config", args.config,
+                *extra, *debug_flag, *args.overrides,
+            )
+        else:
+            if args.pseudo_labels:
+                logger.info(f"Using pre-computed D_h: {args.pseudo_labels}")
+            elif args.skip_labeling:
+                logger.info("Skipping labeling (--skip_labeling)")
+
+        # ══ Phase 2a: SFT Strong Model on D_h (UNCHANGED from MWDPO) ══════
+        if not args.skip_sft:
+            logger.info("═" * 60)
+            logger.info("PHASE 2a: MWDPO_BC — SFT Strong Model on D_h → π_θ^SFT")
+            logger.info("═" * 60)
+            sft_resume_args = (
+                ["--resume_sft_checkpoint", args.resume_sft_checkpoint]
+                if args.resume_sft_checkpoint else []
+            )
+            run_script(
+                "train_sft.py",
+                "--config", args.config,
+                "--pseudo_labels", d_high_path,
+                *sft_resume_args, *debug_flag, *args.overrides,
+            )
+        else:
+            logger.info("Skipping SFT on D_h (--skip_sft)")
+
+        # ══ Phase 2b: Standard DPO on D_h (UNCHANGED from MWDPO) ═══════════
+        logger.info("═" * 60)
+        logger.info("PHASE 2b: MWDPO_BC — Standard DPO on D_h")
+        logger.info("═" * 60)
+        extra_args = [
+            "--sft_model_path", sft_model_path,
+            "--pseudo_labels", d_high_path,
+        ]
+        if args.resume_dpo_checkpoint:
+            extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
+        run_script(
+            "train_strong.py",
+            "--config", args.config,
+            *extra_args, *debug_flag, *args.overrides,
+        )
+
+        # ══ Phase 3: Evaluation (UNCHANGED from MWDPO) ════════════════════
+        logger.info("═" * 60)
+        logger.info("PHASE 3: MWDPO_BC — Evaluation (GRA)")
+        logger.info("═" * 60)
+        eval_args = [
+            "--aligned_model_path", output_dir,
+            "--sft_model_path", sft_model_path,
+        ]
+        if args.run_gpt4:
+            eval_args.append("--run_gpt4")
+        if os.path.exists(d_high_path):
+            eval_args += ["--pseudo_labels", d_high_path]
+        run_script("evaluate.py", "--config", args.config, *eval_args, *args.overrides)
+
+        logger.info("═" * 60)
+        logger.info("Pipeline complete for method=mwdpo_bootstrap_calibration!")
+        logger.info("═" * 60)
+        return
+
+    raise ValueError(
+        f"Unknown method: '{method}'. "
+        "Choose: wdpo, cwpo, mwdpo, mwdpo_bootstrap_calibration, baseline_dpo"
+    )
 
 
 if __name__ == "__main__":

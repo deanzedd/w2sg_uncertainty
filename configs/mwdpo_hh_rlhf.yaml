@@ -14,7 +14,7 @@
 defaults:
   - base
 
-seed: 456
+seed: 42
 method: mwdpo
 dataset_name: hh_rlhf
 labeled_ratio: 0.3
@@ -22,7 +22,7 @@ max_prompt_length: 512                # HH-RLHF dialogue
 
 # ── Model config ────────────────────────────────────────────────────────────
 weak_model_name: Qwen/Qwen2.5-0.5B   # backbone for all k reward models
-strong_model_name: Qwen/Qwen2.5-1.5B
+strong_model_name: Qwen/Qwen2.5-7B
 
 # ── Multi-GPU ──────────────────────────────────────────────────────────────
 device_map: null  # null = single GPU; set "auto" for 7B+ models
@@ -54,13 +54,13 @@ multi_weak:
   # (F=1 means no additional scaling — plain sigmoid of score difference)
 
   # Output dirs for each reward model checkpoint
-  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed456/reward_models  # base dir; model_i saved to {base}/model_{i}
+  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-7B/seed42/reward_models  # base dir; model_i saved to {base}/model_{i}
 
 # ── D_h and D_l label output dirs ─────────────────────────────────────────
-multi_weak_label_output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed456/weak_labels
+multi_weak_label_output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
 
 # Legacy field kept for pipeline compatibility (used only if pseudo_labels arg not given)
-weak_label_output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed456/weak_labels
+weak_label_output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
 
 # ── Reward Model Training (Bradley-Terry, same as CWPO) ────────────────────
 # Each of the k models is trained with these HPs but a different seed.
@@ -74,12 +74,12 @@ reward_model:
   bf16: true
   fp16: false
   logging_steps: 50
-  save_steps: 500
-  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed456/reward_models  # base; each model appended with /model_{i}
+  save_steps: 3000
+  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-7B/seed42/reward_models  # base; each model appended with /model_{i}
 
 # ── Strong Model SFT on D_h ────────────────────────────────────────────────
 sft:
-  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed456/sft_strong
+  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-7B/seed42/sft_strong
   num_train_epochs: 3                   # 3 epochs (same as CWPO spec, Bảng 9)
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 4
@@ -95,7 +95,7 @@ sft:
 # Standard DPO (NOT confidence-weighted) on the clean D_h subset.
 # This instills foundational preference recognition on high-agreement data.
 training:
-  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed456/strong_model_phase1
+  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-7B/seed42/strong_model_phase1
   num_train_epochs: 5
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 2
@@ -115,6 +115,6 @@ training:
   gradient_checkpointing: true
 
 eval:
-  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-1.5B/seed456/eval
+  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-7B/seed42/eval
 
-wandb_run_name: server-aTrung-mwdpo-hh_rlhf-qwen-0.5b-1.5b-phase1
+wandb_run_name: aBinh-mwdpo-hh_rlhf-qwen-0.5b-7b-phase1

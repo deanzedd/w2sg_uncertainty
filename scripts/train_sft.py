@@ -111,6 +111,7 @@ def main():
     # ── Determine training data source ───────────────────────────────────
     if args.pseudo_labels:
         # ── Phase 2b (WDPO/CWPO/MWDPO): SFT on D_weak / D_h ─────────────
+        # method in ("mwdpo", "mwdpo_bootstrap_calibration")
         phase_label = "D_h" if method == "mwdpo" else "D_weak"
         logger.info(f"SFT: training on {phase_label} from {args.pseudo_labels}")
         init_wandb(cfg, tags=["sft", phase_label.lower(), cfg.dataset_name, cfg.strong_model_name])

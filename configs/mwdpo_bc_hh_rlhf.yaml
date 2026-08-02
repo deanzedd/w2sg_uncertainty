@@ -1,0 +1,154 @@
+# MWDPO_bootstrap_calibration — HH-RLHF experiment
+#
+# Extends MWDPO Phase 1 with:
+#   1a: Multi-head bootstrap ensemble (shared backbone, K scalar heads,
+#       each trained on bootstrap resample of D_l)
+#   2a: Per-head temperature calibration (fit T_k on D_l val split,
+#       aggregate calibrated probabilities instead of raw margins)
+#
+# Ablations:
+#   - Disable bootstrap only:     bootstrap_calibration.use_bootstrap: false
+#   - Disable calibration only:   bootstrap_calibration.use_calibration: false
+#   - Disable both (→ MWDPO-like): both false, num_heads: 1
+#
+# Usage:
+#   python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf.yaml
+#   python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf.yaml --debug
+
+defaults:
+  - base
+
+seed: 42
+method: mwdpo_bootstrap_calibration
+dataset_name: hh_rlhf
+labeled_ratio: 0.3
+max_prompt_length: 512
+
+# ── Model config ─────────────────────────────────────────────────────────────
+weak_model_name: Qwen/Qwen2.5-0.5B    # shared backbone for multi-head model
+strong_model_name: Qwen/Qwen2.5-7B
+
+# ── Multi-GPU ─────────────────────────────────────────────────────────────────
+device_map: null
+
+# ── LoRA (same as MWDPO) ──────────────────────────────────────────────────────
+use_lora: true
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules: null
+
+# ── Bootstrap Calibration Config ──────────────────────────────────────────────
+# This block is read by both train_bootstrap_reward_model.py and label_bootstrap_calibration.py
+bootstrap_calibration:
+  num_heads: 3                       # K — number of scalar heads (all share one backbone)
+
+  # ── 2-Phase Training ─────────────────────────────────────────────────────────
+  # true  → Phase 1: train ScalarRewardModel backbone on D_l (full fine-tune)
+  #          Phase 2: freeze backbone, train K heads independently
+  # false → train backbone + K heads jointly (original behavior, backward compat)
+  run_phase1_pretrain: false
+
+  # Output dir for the Phase 1 ScalarRewardModel checkpoint.
+  # null = auto-derive: {reward_model.output_dir}/phase1_backbone
+  phase1_output_dir: null
+
+  # ── Head Architecture ─────────────────────────────────────────────────────────
+  # "linear" → nn.Linear(hidden, 1)           [backward compatible default]
+  # "mlp"    → Linear → LayerNorm → GELU → Dropout → Linear  [diverse projections]
+  head_type: linear
+
+  # Intermediate projection dim for mlp head.
+  # null = hidden_size // 4 (e.g. 384 for Qwen2.5-0.5B with hidden_size=1536)
+  # Can be overridden: e.g. bootstrap_calibration.mlp_hidden=128
+  mlp_hidden: null
+
+  # Dropout probability inside MLPRewardHead (only active when head_type=mlp).
+  # Forces each head to use different subsets of backbone features → diversity.
+  # 0.0 = disabled (backward compat). Recommended: 0.3–0.5.
+  # If heads still converge, increase to 0.5 before increasing K.
+  head_dropout: 0.0
+
+  # ── Bootstrap Masking ─────────────────────────────────────────────────────────
+  # true  → each head trains on random resample of batch (decorrelated heads)
+  # false → all heads see full batch (ablation: MLP+dropout diversity only)
+  use_bootstrap: true
+
+  # ── Temperature Calibration ───────────────────────────────────────────────────
+  # true  → fit T_k on D_l val split (principled calibrated confidence)
+  # false → T_k = 1.0 (ablation: raw margins)
+  use_calibration: false
+
+  # Fraction of D_l used as calibration val set (held out from training)
+  cal_val_ratio: 0.1
+
+  # Agreement criterion to assign sample to D_h
+  #   "unanimous"                — all K heads must agree with ensemble direction
+  #   "unanimous_with_threshold" — unanimous AND calibrated confidence C >= threshold
+  agreement_mode: unanimous_with_threshold
+
+  # Only used when agreement_mode = "unanimous_with_threshold"
+  confidence_threshold: 0.8
+
+  # Output dir for the Phase 2 multi-head checkpoint
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/reward_model
+
+# ── D_h and D_l output dirs (same convention as MWDPO) ───────────────────────
+multi_weak_label_output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
+weak_label_output_dir:       outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
+
+# ── Reward Model Training HPs (same as MWDPO, read by MultiHeadRewardTrainer) ─
+reward_model:
+  num_train_epochs: 5
+  per_device_train_batch_size: 16
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  warmup_ratio: 0.0
+  bf16: true
+  fp16: false
+  logging_steps: 50
+  save_steps: 3000
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/reward_model
+
+# ── Strong Model SFT on D_h (UNCHANGED from MWDPO) ───────────────────────────
+sft:
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/sft_strong
+  num_train_epochs: 3
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-5
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  save_steps: 3000
+  eval_steps: 3000
+  optim: paged_adamw_32bit
+  gradient_checkpointing: true
+
+# ── Phase 1: Standard DPO on D_h (UNCHANGED from MWDPO) ─────────────────────
+training:
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/strong_model_phase1
+  num_train_epochs: 5
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 4
+  learning_rate: 5.0e-6
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  optim: paged_adamw_32bit
+  beta: 0.5
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 2000
+  eval_steps: 2000
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
+
+eval:
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/eval
+
+wandb_run_name: aBinh-mwdpo_1phase_threshold0.8_linear_boots-hh_rlhf-qwen-0.5b-7b-phase1

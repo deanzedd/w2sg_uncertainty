@@ -15,6 +15,8 @@ Usage:
         --sft_model_path outputs/cwpo/hh_rlhf/sft_strong \
         --run_gpt4 \
         --pseudo_labels outputs/cwpo/hh_rlhf/weak_labels/pseudo_labeled.jsonl
+
+    python scripts/evaluate.py --config configs/mwdpo_bc_hh_rlhf.yaml --aligned_model_path outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase1 --sft_model_path outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/sft_strong
 """
 
 import argparse

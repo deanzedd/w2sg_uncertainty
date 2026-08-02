@@ -24,6 +24,8 @@ Usage:
     python scripts/train_strong.py --config configs/baseline_dpo_hh_rlhf.yaml \\
         --sft_model_path outputs/baseline_dpo/hh_rlhf/sft_strong
 
+    python scripts/train_strong.py --config configs/mwdpo_bc_hh_rlhf.yaml --pseudo_labels outputs/mwdpo_bc/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels/d_high/pseudo_labeled.jsonl --sft_model_path outputs/mwdpo_bc/hh_rlhf/Qwen2.5-1.5B/seed42/sft_strong
+
     # Debug
     python scripts/train_strong.py --config configs/wdpo_hh_rlhf.yaml \\
         --pseudo_labels path/to/labels.jsonl --sft_model_path path/to/sft \\
@@ -119,12 +121,15 @@ def main():
         _train_wdpo(cfg, wrapper, ref_model, args.pseudo_labels, args.resume_dpo_checkpoint)
     elif method == "cwpo":
         _train_cwpo(cfg, wrapper, ref_model, args.pseudo_labels, args.resume_dpo_checkpoint)
-    elif method == "mwdpo":
+    elif method in ("mwdpo", "mwdpo_bootstrap_calibration"):
         _train_mwdpo(cfg, wrapper, ref_model, args.pseudo_labels, args.resume_dpo_checkpoint)
     elif method == "baseline_dpo":
         _train_baseline_dpo(cfg, wrapper, ref_model, args.resume_dpo_checkpoint)
     else:
-        raise ValueError(f"Unknown method: '{method}'. Choose: wdpo, cwpo, mwdpo, baseline_dpo")
+        raise ValueError(
+            f"Unknown method: '{method}'. "
+            f"Choose: wdpo, cwpo, mwdpo, mwdpo_bootstrap_calibration, baseline_dpo"
+        )
 
     finish_wandb()
     logger.info("Strong model training complete!")
