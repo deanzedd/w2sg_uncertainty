@@ -26,7 +26,7 @@ max_prompt_length: 512
 
 # ── Model config ─────────────────────────────────────────────────────────────
 weak_model_name: Qwen/Qwen2.5-0.5B    # shared backbone for multi-head model
-strong_model_name: Qwen/Qwen2.5-1.5B
+strong_model_name: Qwen/Qwen2.5-7B
 
 # ── Multi-GPU ─────────────────────────────────────────────────────────────────
 device_map: null
@@ -130,7 +130,7 @@ sft:
 # ── Phase 1: Standard DPO on D_h (UNCHANGED from MWDPO) ─────────────────────
 training:
   output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/strong_model_phase1
-  num_train_epochs: 5
+  num_train_epochs: 10
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 2
   gradient_accumulation_steps: 4
@@ -151,4 +151,4 @@ training:
 eval:
   output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/eval
 
-wandb_run_name: weaklabel_mwdpo_1phase_threshold0.8_linear_boots-hh_rlhf-qwen-0.5b-7b-phase1
+wandb_run_name: aBinh_mwdpo_1phase_threshold0.8_linear_boots-hh_rlhf-qwen-0.5b-7b-phase1

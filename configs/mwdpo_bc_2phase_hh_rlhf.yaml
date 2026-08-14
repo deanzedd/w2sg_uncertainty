@@ -137,7 +137,7 @@ strong_confidence:
 #   - max_grad_norm: 0.5  (tight clipping)
 phase2_training:
   output_dir: outputs/mwdpo_bc_2phase/hh_rlhf/Qwen2.5-7B/seed42/strong_model_phase2
-  num_train_epochs: 2
+  num_train_epochs: 5
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 2
   gradient_accumulation_steps: 4
@@ -158,4 +158,4 @@ phase2_training:
 eval:
   output_dir: outputs/mwdpo_bc_2phase/hh_rlhf/Qwen2.5-7B/seed42/eval
 
-wandb_run_name: aTrung-mwdpo_bc_2phase-hh_rlhf-qwen-0.5b-7B
+wandb_run_name: aBinh-mwdpo_bc_2phase-hh_rlhf-qwen-0.5b-7B
