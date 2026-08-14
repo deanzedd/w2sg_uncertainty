@@ -1,0 +1,148 @@
+# mwdpo_2phase_hh_rlhf.yaml — Multi-Weak Agreement DPO with 2-Phase Training
+#
+# Extends mwdpo_hh_rlhf.yaml with Phase 2 (Debate-Weighted DPO on D_l):
+#
+#   Phase 1a: Train k reward models on D_l (same as mwdpo)
+#   Phase 1b: Multi-weak labeling D_u → D_h ∪ D_l (same as mwdpo)
+#   Phase 2a: SFT strong model on D_h → π_SFT (same as mwdpo)
+#   Phase 2b: Standard DPO on D_h → π_Phase1 (same as mwdpo)
+#   Phase 2c: 🆕 Pre-compute C_strong for D_l (compute_strong_confidence.py)
+#   Phase 2d: 🆕 Debate-Weighted DPO on D_l → π_Final
+#   Phase 3:  Evaluation (GRA)
+#
+# Usage:
+#   python pipeline/run_pipeline.py --config configs/mwdpo_2phase_hh_rlhf.yaml
+#   python pipeline/run_pipeline.py --config configs/mwdpo_2phase_hh_rlhf.yaml --debug
+#
+#   # Skip reward model training (already trained):
+#   python pipeline/run_pipeline.py --config configs/mwdpo_2phase_hh_rlhf.yaml \
+#       --skip_reward_model
+#
+#   # Skip to Phase 2 (D_h already labeled, SFT + Phase 1 DPO done):
+#   python pipeline/run_pipeline.py --config configs/mwdpo_2phase_hh_rlhf.yaml \
+#       --skip_reward_model --skip_labeling --skip_sft --skip_phase1_dpo
+
+defaults:
+  - base
+
+seed: 42
+method: mwdpo_2phase
+dataset_name: hh_rlhf
+labeled_ratio: 0.3
+max_prompt_length: 512
+
+# ── Model config ──────────────────────────────────────────────────────────────
+weak_model_name: Qwen/Qwen2.5-0.5B
+strong_model_name: Qwen/Qwen2.5-1.5B
+
+# ── Multi-GPU ─────────────────────────────────────────────────────────────────
+device_map: null
+
+# ── LoRA (same spec as CWPO) ──────────────────────────────────────────────────
+use_lora: true
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules: null
+
+# ── Multi-Weak Ensemble Config ────────────────────────────────────────────────
+multi_weak:
+  num_models: 3
+  seeds: [42, 123, 456]
+  agreement_mode: unanimous_with_threshold
+  confidence_threshold: 0.8
+  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/reward_models
+
+# ── D_h and D_l label output dirs ────────────────────────────────────────────
+multi_weak_label_output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels
+weak_label_output_dir:       outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels
+
+# ── Reward Model Training (same as mwdpo) ────────────────────────────────────
+reward_model:
+  num_train_epochs: 5
+  per_device_train_batch_size: 16
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  warmup_ratio: 0.0
+  bf16: true
+  fp16: false
+  logging_steps: 50
+  save_steps: 3000
+  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/reward_models
+
+# ── Phase 2a: SFT on D_h (same as mwdpo) ────────────────────────────────────
+sft:
+  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/sft_strong
+  num_train_epochs: 3
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-5
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  optim: paged_adamw_32bit
+  gradient_checkpointing: true
+
+# ── Phase 2b: Standard DPO on D_h (same as mwdpo) ───────────────────────────
+training:
+  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase1
+  num_train_epochs: 5
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 4
+  learning_rate: 5.0e-6
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  optim: paged_adamw_32bit
+  beta: 0.5
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 5000
+  eval_steps: 5000
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
+
+# ── Phase 2c: C_strong pre-computation config ────────────────────────────────
+# (used by compute_strong_confidence.py)
+strong_confidence:
+  # Path where D_l with C_strong scores is saved
+  d_low_scored_path: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels/d_low_scored/pseudo_labeled.jsonl
+  # allow_negative: if true, confidence_weight = raw C_strong ∈ [-1,1]
+  #                 if false (default), confidence_weight = max(C_strong, 0.0)
+  allow_negative: false
+  batch_size: 8
+
+# ── Phase 2d: 🆕 Debate-Weighted DPO on D_l ──────────────────────────────────
+# Conservative hyperparameters for noisy D_l:
+#   - LR:   2e-6  (2.5× lower than Phase 1 5e-6 — avoids unlearning Phase 1)
+#   - β:    0.7   (stronger KL penalty — conservative on noisy data)
+#   - epochs: 2   (few epochs to prevent memorizing noise)
+#   - max_grad_norm: 0.5  (tighter clipping for stability)
+phase2_training:
+  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase2
+  num_train_epochs: 2
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-6
+  lr_scheduler_type: cosine
+  warmup_steps: 50
+  weight_decay: 0.05
+  optim: paged_adamw_32bit
+  beta: 0.7
+  max_grad_norm: 0.5
+  logging_steps: 10
+  save_steps: 5000
+  eval_steps: 5000
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
+
+eval:
+  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/eval
+
+wandb_run_name: aTrung-mwdpo_2phase-hh_rlhf-qwen-0.5b-1.5B

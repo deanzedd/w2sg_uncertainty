@@ -34,7 +34,7 @@ from src.data import get_dataset
 from src.models import get_model_wrapper
 from src.models.reward_model import load_reward_model_and_tokenizer, ScalarRewardModel
 from src.weak_labeler import DPORewardLabeler, ConfidenceLabeler
-from src.utils import load_config, print_config, set_seed, setup_logging
+from src.utils import load_config, print_config, set_seed, setup_logging, generate_analysis_txt
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,11 @@ def main():
     max_samples = args.max_samples
     logger.info(f"D_u size: {len(unlabeled_ds)}")
 
+    # Keep original D_u samples for proxy accuracy computation
+    original_samples = list(unlabeled_ds)
+    if max_samples is not None:
+        original_samples = original_samples[:max_samples]
+
     # ── Build labeler ────────────────────────────────────────────────────
     if method == "wdpo":
         labeler = _build_wdpo_labeler(cfg, args.weak_model_path, args.weak_ref_path, device)
@@ -99,6 +104,18 @@ def main():
     output_path = os.path.join(output_dir, "pseudo_labeled.jsonl")
     labeler.save(pseudo_labeled, output_path)
     logger.info(f"Pseudo-labeled D̂ saved to {output_path} ({len(pseudo_labeled)} samples)")
+
+    # ── Write analysis.txt ────────────────────────────────────────────────
+    analysis_path = generate_analysis_txt(
+        output_dir=output_dir,
+        cfg=cfg,
+        method=method,
+        d_all=pseudo_labeled,
+        original_samples=original_samples,
+        config_path=args.config,
+        num_models=1,
+    )
+    logger.info(f"Analysis report saved to: {analysis_path}")
 
 
 def _build_wdpo_labeler(cfg, weak_model_path: str, weak_ref_path: str, device: str) -> DPORewardLabeler:

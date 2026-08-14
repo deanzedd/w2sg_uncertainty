@@ -1,0 +1,171 @@
+# Super_multi_dpo — HH-RLHF experiment
+#
+# 2-Phase weak reward model training:
+#   Phase 1 (Warmup, 3 epochs): Train backbone M + K linear heads jointly on D_l.
+#                                Backbone learns multi-head reward features.
+#   Phase 2 (Ensemble, 2 epochs): Freeze M, attach K LoRA adapters (random init),
+#                                  train LoRA_k + head_k independently.
+#   Result: K diverse reward models (M+LoRA_k+head_k) ≈ MWDPO quality at ~1.3x cost.
+#
+# Labeling: reuses label_multi_weak.py with auto-detect for LoRA model loading.
+# Strong model training: identical to MWDPO (SFT + DPO on D_h).
+#
+# Usage:
+#   python pipeline/run_pipeline.py --config configs/super_multi_dpo_hh_rlhf.yaml
+#   python pipeline/run_pipeline.py --config configs/super_multi_dpo_hh_rlhf.yaml --debug
+#
+#   # Skip Phase 1 (checkpoint exists):
+#   python pipeline/run_pipeline.py --config configs/super_multi_dpo_hh_rlhf.yaml \
+#       --skip_reward_model  (then manually supply --pseudo_labels if needed)
+#
+#   # Full pipeline skipping reward model + labeling (pre-computed D_h):
+#   python pipeline/run_pipeline.py --config configs/super_multi_dpo_hh_rlhf.yaml \
+#       --skip_reward_model --skip_labeling \
+#       --pseudo_labels outputs/super_multi_dpo/.../weak_labels/d_high/pseudo_labeled.jsonl
+
+defaults:
+  - base
+
+seed: 42
+method: super_multi_dpo
+dataset_name: hh_rlhf
+labeled_ratio: 0.3
+max_prompt_length: 512
+
+# ── Model config ─────────────────────────────────────────────────────────────
+weak_model_name: Qwen/Qwen2.5-0.5B
+strong_model_name: Qwen/Qwen2.5-1.5B
+
+# ── Multi-GPU ─────────────────────────────────────────────────────────────────
+device_map: null
+
+# ── LoRA for STRONG model (SFT/DPO — same as MWDPO) ─────────────────────────
+use_lora: true
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules: null
+
+# ── Super Multi Ensemble Config ───────────────────────────────────────────────
+super_multi:
+  num_models: 3                         # K — number of LoRA reward models
+
+  # ── Phase 1 (Warmup) ────────────────────────────────────────────────────────
+  # Train backbone M + K linear heads jointly on D_l for {phase1_epochs} epochs.
+  # Backbone learns a high-quality feature representation in the multi-head context.
+  phase1_epochs: 5
+  phase1_output_dir: outputs/super_multi_dpo_bootstrap_threshold0.8_lora/hh_rlhf/Qwen2.5-7B/seed42/phase1_warmup
+
+  # ── Phase 2 (Ensemble) ──────────────────────────────────────────────────────
+  # Freeze backbone, attach K LoRA adapters with independent random init,
+  # then train LoRA_k + head_k on D_l.
+  phase2_epochs: 5
+  phase2_learning_rate: 5e-5          # Higher LR for LoRA (vs 1e-5 Phase 1)
+
+  # ── LoRA hyperparams for WEAK reward model ───────────────────────────────────
+  # Independent from lora_r/lora_alpha above (those are for the strong model).
+  reward_lora_r: 8
+  reward_lora_alpha: 16
+  reward_lora_dropout: 0.05
+  reward_lora_target_modules: null      # null = PEFT auto-detect from model architecture
+
+  # ── Bootstrap Masking ──────────────────────────────────────────────────────
+  # Phase 1 (Warmup): backbone + K linear heads train jointly.
+  # Bootstrap in Phase 1: each head trains on bootstrap resample of the batch.
+  #   true  → decorrelate K heads already during warmup (extra diversity)
+  #   false → all heads see full batch (backbone warmup focus) [default]
+  use_bootstrap_phase1: true
+
+  # Phase 2 (Ensemble): K LoRA models train independently.
+  # Bootstrap in Phase 2: each LoRA model trains on bootstrap resample of the batch.
+  #   true  → extra batch-level decorrelation on top of LoRA random-init diversity
+  #   false → all models see full batch (LoRA random-init diversity only) [default]
+  use_bootstrap_phase2: false
+
+  # Valid combinations:
+  #   phase1=false, phase2=false → no bootstrap anywhere (default)
+  #   phase1=true,  phase2=false → bootstrap only during warmup
+  #   phase1=false, phase2=true  → bootstrap only during LoRA training
+  #   phase1=true,  phase2=true  → bootstrap in both phases (maximum decorrelation)
+
+  # ── Training Mode ───────────────────────────────────────────────────────────
+  # "sequential" (default): train model_0 → save → free VRAM → model_1 → ...
+  #     VRAM: 1× (LoRA backbone + head); identical results to parallel
+  # "parallel":             train all K models in one loop simultaneously
+  #     VRAM: K× (LoRA backbone + head); faster wall-clock, same results
+  # Note: results are IDENTICAL because K models train independently (no gradient sharing).
+  train_mode: parallel
+
+  # ── Agreement criterion (same options as MWDPO / MWDPO_BC) ─────────────────
+  #   "unanimous"                — all K models must agree on preference direction
+  #   "unanimous_with_threshold" — unanimous AND ensemble confidence C >= threshold
+  agreement_mode: unanimous_with_threshold
+
+  # Only used when agreement_mode = "unanimous_with_threshold"
+  confidence_threshold: 0.8
+
+  # Output dir for K LoRA reward models (model_{0..K-1}/checkpoint-final/)
+  output_dir: outputs/super_multi_dpo_bootstrap_threshold0.8_lora/hh_rlhf/Qwen2.5-7B/seed42/reward_models
+
+# ── D_h / D_l label output dirs ──────────────────────────────────────────────
+multi_weak_label_output_dir: outputs/super_multi_dpo_bootstrap_threshold0.8_lora/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
+weak_label_output_dir:       outputs/super_multi_dpo_bootstrap_threshold0.8_lora/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
+
+# ── Reward Model Training HPs (Phase 1 uses these; Phase 2 overrides LR+epochs) ─
+# Phase 2 LR is controlled by super_multi.phase2_learning_rate (2e-4).
+# Phase 2 epochs is controlled by super_multi.phase2_epochs (2).
+reward_model:
+  num_train_epochs: 5                   # Phase 1 epochs (= super_multi.phase1_epochs)
+  per_device_train_batch_size: 16
+  gradient_accumulation_steps: 4        # effective batch = 64
+  learning_rate: 1.0e-5                 # Phase 1 LR
+  weight_decay: 0.0
+  warmup_ratio: 0.05
+  max_grad_norm: 1.0
+  bf16: true
+  fp16: false
+  logging_steps: 50
+  save_steps: 3000
+  output_dir: outputs/super_multi_dpo_bootstrap_threshold0.8_lora/hh_rlhf/Qwen2.5-7B/seed42/reward_models
+
+# ── Strong Model SFT on D_h (UNCHANGED from MWDPO) ──────────────────────────
+sft:
+  output_dir: outputs/super_multi_dpo_bootstrap_threshold0.8_lora/hh_rlhf/Qwen2.5-7B/seed42/sft_strong
+  num_train_epochs: 3
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4        # effective batch = 16
+  learning_rate: 1.0e-5
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  save_steps: 3000
+  eval_steps: 3000
+  optim: paged_adamw_32bit
+  gradient_checkpointing: true
+
+# ── Standard DPO on D_h (UNCHANGED from MWDPO) ──────────────────────────────
+training:
+  output_dir: outputs/super_multi_dpo_bootstrap_threshold0.8_lora/hh_rlhf/Qwen2.5-7B/seed42/strong_model
+  num_train_epochs: 5
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 4        # effective batch = 32
+  learning_rate: 5.0e-6
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  optim: paged_adamw_32bit
+  beta: 0.5
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 5000
+  eval_steps: 5000
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
+
+eval:
+  output_dir: outputs/super_multi_dpo_bootstrap_threshold0.8_lora/hh_rlhf/Qwen2.5-7B/seed42/eval
+
+wandb_run_name: weaklabelsuper-multi-dpo_bootstrap_threshold0.8_lora-hh_rlhf-qwen-0.5b-1.5b

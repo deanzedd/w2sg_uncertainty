@@ -124,7 +124,7 @@ def parse_args():
     )
     parser.add_argument("--config", required=True)
     parser.add_argument("--debug", action="store_true")
-    # ── Phase skips ──────────────────────────────────────────────────────
+    # ── Phase skips ───────────────────────────────────────────────────
     parser.add_argument("--skip_sft", action="store_true",
                         help="Skip SFT phase (Phase 2a for MWDPO, Phase 2b for WDPO/CWPO)")
     parser.add_argument("--skip_weak_model", action="store_true",
@@ -133,6 +133,20 @@ def parse_args():
                         help="Skip reward model training (CWPO Phase 1b; MWDPO Phase 1a)")
     parser.add_argument("--skip_labeling", action="store_true",
                         help="Skip weak labeling phase (Phase 2 / Phase 1b for MWDPO)")
+    parser.add_argument(
+        "--skip_phase1_dpo", action="store_true",
+        help=(
+            "[2-phase only] Skip Phase 1 DPO on D_h (Phase 2b). "
+            "Use when Phase 1 DPO is already done and you only want to run Phase 2."
+        ),
+    )
+    parser.add_argument(
+        "--skip_phase2", action="store_true",
+        help=(
+            "[2-phase only] Skip Phase 2 (C_strong computation + Debate-Weighted DPO on D_l). "
+            "Produces a Phase 1-only model for ablation comparison."
+        ),
+    )
     # ── Pre-computed paths ────────────────────────────────────────────
     parser.add_argument("--pseudo_labels", type=str, default=None,
                         help="Pre-computed D_h (MWDPO) or D_weak (WDPO/CWPO) path")
@@ -145,7 +159,7 @@ def parse_args():
     parser.add_argument("--reward_model_path", type=str, default=None,
                         help="Pre-trained reward model path (CWPO single model; or "
                              "MultiHeadRewardModel checkpoint-final dir for mwdpo_bootstrap_calibration)")
-    # ── Resume checkpoints ───────────────────────────────────────────
+    # ── Resume checkpoints ───────────────────────────────────────────────
     parser.add_argument("--resume_sft_checkpoint", type=str, default=None,
                         help="Resume SFT training from this checkpoint directory")
     parser.add_argument("--resume_dpo_checkpoint", type=str, default=None,
@@ -618,9 +632,423 @@ def main():
         logger.info("═" * 60)
         return
 
+    # ════════════════════════════════════════════════════════════════════
+    # SUPER_MULTI_DPO — 2-Phase LoRA Ensemble DPO
+    # ════════════════════════════════════════════════════════════════════
+    if method == "super_multi_dpo":
+        sm_cfg = cfg.get("super_multi", {})
+        rm_base_dir = sm_cfg.get(
+            "output_dir",
+            cfg.get("reward_model", {}).get("output_dir", "outputs/super_multi_dpo/reward_models")
+        )
+        label_base_dir = cfg.get(
+            "multi_weak_label_output_dir",
+            cfg.get("weak_label_output_dir", f"outputs/super_multi_dpo/weak_labels"),
+        )
+        d_high_path = args.pseudo_labels or os.path.join(
+            label_base_dir, "d_high", "pseudo_labeled.jsonl"
+        )
+
+        # ══ Phase 1a+b: Train Super Multi Reward Model (Phase 1 warmup + Phase 2 LoRA ensemble)
+        if not args.skip_reward_model:
+            logger.info("═" * 60)
+            logger.info("PHASE 1a+b: Super_multi_dpo — 2-Phase Reward Model Training")
+            logger.info("  Phase 1: Warmup backbone + K linear heads jointly")
+            logger.info("  Phase 2: Freeze backbone, attach K LoRA adapters, train independently")
+            logger.info("═" * 60)
+            run_script(
+                "train_super_multi_reward_model.py",
+                "--config", args.config,
+                *debug_flag, *args.overrides,
+            )
+        else:
+            logger.info("Skipping reward model training (--skip_reward_model)")
+
+        # ══ Phase 1c: Multi-Weak Labeling D_u → D_h / D_l (reuses label_multi_weak.py) ═
+        if not args.skip_labeling and not args.pseudo_labels:
+            logger.info("═" * 60)
+            logger.info("PHASE 1c: Super_multi_dpo — Multi-Weak Labeling D_u → D_h/D_l")
+            logger.info(f"  agreement_mode: {sm_cfg.get('agreement_mode', 'unanimous')}")
+            logger.info("═" * 60)
+            run_script(
+                "label_multi_weak.py",
+                "--config", args.config,
+                *debug_flag, *args.overrides,
+            )
+        else:
+            if args.pseudo_labels:
+                logger.info(f"Using pre-computed D_h: {args.pseudo_labels}")
+            elif args.skip_labeling:
+                logger.info("Skipping labeling (--skip_labeling)")
+
+        # ══ Phase 2a: SFT Strong Model on D_h (IDENTICAL to MWDPO) ══════════════
+        if not args.skip_sft:
+            logger.info("═" * 60)
+            logger.info("PHASE 2a: Super_multi_dpo — SFT Strong Model on D_h")
+            logger.info("═" * 60)
+            sft_resume_args = (
+                ["--resume_sft_checkpoint", args.resume_sft_checkpoint]
+                if args.resume_sft_checkpoint else []
+            )
+            run_script(
+                "train_sft.py",
+                "--config", args.config,
+                "--pseudo_labels", d_high_path,
+                *sft_resume_args, *debug_flag, *args.overrides,
+            )
+        else:
+            logger.info("Skipping SFT on D_h (--skip_sft)")
+
+        # ══ Phase 2b: Standard DPO on D_h (IDENTICAL to MWDPO) ═══════════════
+        logger.info("═" * 60)
+        logger.info("PHASE 2b: Super_multi_dpo — Standard DPO on D_h")
+        logger.info("═" * 60)
+        extra_args = [
+            "--sft_model_path", sft_model_path,
+            "--pseudo_labels", d_high_path,
+        ]
+        if args.resume_dpo_checkpoint:
+            extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
+        run_script(
+            "train_strong.py",
+            "--config", args.config,
+            *extra_args, *debug_flag, *args.overrides,
+        )
+
+        # ══ Phase 3: Evaluation (GRA) (IDENTICAL to MWDPO) ═════════════════
+        logger.info("═" * 60)
+        logger.info("PHASE 3: Super_multi_dpo — Evaluation (GRA)")
+        logger.info("═" * 60)
+        eval_args = [
+            "--aligned_model_path", output_dir,
+            "--sft_model_path", sft_model_path,
+        ]
+        if args.run_gpt4:
+            eval_args.append("--run_gpt4")
+        if os.path.exists(d_high_path):
+            eval_args += ["--pseudo_labels", d_high_path]
+        run_script("evaluate.py", "--config", args.config, *eval_args, *args.overrides)
+
+        logger.info("═" * 60)
+        logger.info("Pipeline complete for method=super_multi_dpo!")
+        logger.info("═" * 60)
+        return
+
+    # ════════════════════════════════════════════════════════════════════
+    # MWDPO_2PHASE — Multi-Weak Agreement DPO with Phase 2 Residual Training
+    # ════════════════════════════════════════════════════════════════════
+    if method == "mwdpo_2phase":
+        label_base_dir = cfg.get("multi_weak_label_output_dir",
+                                  cfg.get("weak_label_output_dir", "outputs/mwdpo_2phase/weak_labels"))
+
+        d_high_path = args.pseudo_labels or os.path.join(
+            label_base_dir, "d_high", "pseudo_labeled.jsonl"
+        )
+        d_low_path = os.path.join(label_base_dir, "d_low", "pseudo_labeled.jsonl")
+
+        # D_l with C_strong scores (output of compute_strong_confidence.py)
+        sc_cfg = cfg.get("strong_confidence", {})
+        d_low_scored_path = sc_cfg.get(
+            "d_low_scored_path",
+            os.path.join(label_base_dir, "d_low_scored", "pseudo_labeled.jsonl"),
+        )
+
+        # Phase 1 DPO output dir (π_Phase1)
+        phase1_output_dir = cfg.training.get(
+            "output_dir", "outputs/mwdpo_2phase/strong_model_phase1"
+        )
+
+        # Phase 2 final model output dir
+        p2_cfg = cfg.get("phase2_training", cfg.get("training", {}))
+        phase2_output_dir = p2_cfg.get(
+            "output_dir", "outputs/mwdpo_2phase/strong_model_phase2"
+        )
+
+        # ══ Phase 1a: Train k Reward Models on D_l ════════════════════════════
+        if not args.skip_reward_model:
+            logger.info("═" * 60)
+            logger.info("PHASE 1a: MWDPO_2PHASE — Train k Reward Models on D_l")
+            logger.info("═" * 60)
+            run_script("train_multi_reward_models.py", "--config", args.config,
+                       *debug_flag, *args.overrides)
+        else:
+            logger.info("Skipping reward model training (--skip_reward_model)")
+
+        # ══ Phase 1b: Multi-Weak Labeling D_u → D_h ∪ D_l ═════════════════
+        if not args.skip_labeling and not args.pseudo_labels:
+            logger.info("═" * 60)
+            logger.info("PHASE 1b: MWDPO_2PHASE — Multi-Weak Labeling D_u → D_h + D_l")
+            logger.info("═" * 60)
+            run_script("label_multi_weak.py", "--config", args.config,
+                       *debug_flag, *args.overrides)
+        else:
+            if args.pseudo_labels:
+                logger.info(f"Using pre-computed D_h: {args.pseudo_labels}")
+            elif args.skip_labeling:
+                logger.info("Skipping labeling (--skip_labeling)")
+
+        # ══ Phase 2a: SFT Strong Model on D_h ══════════════════════════════
+        if not args.skip_sft:
+            logger.info("═" * 60)
+            logger.info("PHASE 2a: MWDPO_2PHASE — SFT Strong Model on D_h → π_SFT")
+            logger.info("═" * 60)
+            sft_resume_args = (["--resume_sft_checkpoint", args.resume_sft_checkpoint]
+                               if args.resume_sft_checkpoint else [])
+            run_script("train_sft.py", "--config", args.config,
+                       "--pseudo_labels", d_high_path,
+                       *sft_resume_args, *debug_flag, *args.overrides)
+        else:
+            logger.info("Skipping SFT on D_h (--skip_sft)")
+
+        # ══ Phase 2b: Standard DPO on D_h → π_Phase1 ══════════════════════
+        if not getattr(args, "skip_phase1_dpo", False):
+            logger.info("═" * 60)
+            logger.info("PHASE 2b: MWDPO_2PHASE — Standard DPO on D_h → π_Phase1")
+            logger.info("═" * 60)
+            extra_args = ["--sft_model_path", sft_model_path,
+                          "--pseudo_labels", d_high_path]
+            if args.resume_dpo_checkpoint:
+                extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
+            run_script("train_strong.py", "--config", args.config,
+                       *extra_args, *debug_flag, *args.overrides)
+        else:
+            logger.info("Skipping Phase 1 DPO on D_h (--skip_phase1_dpo)")
+
+        # ══ Phase 2c: Pre-compute C_strong for D_l ═════════════════════════
+        if not getattr(args, "skip_phase2", False):
+            logger.info("═" * 60)
+            logger.info("PHASE 2c: MWDPO_2PHASE — Pre-compute C_strong for D_l")
+            logger.info(f"  π_Phase1 : {phase1_output_dir}")
+            logger.info(f"  π_SFT    : {sft_model_path}")
+            logger.info(f"  D_l      : {d_low_path}")
+            logger.info(f"  Output   : {d_low_scored_path}")
+            logger.info("═" * 60)
+
+            # allow_negative flag: pass if set in config
+            allow_neg_flag = (["--allow_negative"]
+                              if sc_cfg.get("allow_negative", False) else [])
+            batch_size_arg = ["--batch_size", str(int(sc_cfg.get("batch_size", 8)))]
+            run_script(
+                "compute_strong_confidence.py",
+                "--config", args.config,
+                "--phase1_model_path", phase1_output_dir,
+                "--sft_model_path", sft_model_path,
+                "--d_low_path", d_low_path,
+                "--output_path", d_low_scored_path,
+                *allow_neg_flag,
+                *batch_size_arg,
+                *debug_flag, *args.overrides,
+            )
+
+            # ══ Phase 2d: Debate-Weighted DPO on D_l → π_Final ════════════
+            logger.info("═" * 60)
+            logger.info("PHASE 2d: MWDPO_2PHASE — Debate-Weighted DPO on D_l → π_Final")
+            logger.info("═" * 60)
+            phase2_extra = [
+                "--sft_model_path",   sft_model_path,
+                "--phase1_model_path", phase1_output_dir,
+                "--pseudo_labels",    d_low_scored_path,
+            ]
+            if args.resume_dpo_checkpoint:
+                phase2_extra += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
+            run_script("train_strong.py", "--config", args.config,
+                       *phase2_extra, *debug_flag, *args.overrides)
+        else:
+            logger.info("Skipping Phase 2 (--skip_phase2). Using Phase 1 model as final.")
+            phase2_output_dir = phase1_output_dir
+
+        # ══ Phase 3: Evaluation (GRA) ════════════════════════════════════
+        logger.info("═" * 60)
+        logger.info("PHASE 3: MWDPO_2PHASE — Evaluation (GRA)")
+        logger.info("═" * 60)
+        eval_args = [
+            "--aligned_model_path", phase2_output_dir,
+            "--sft_model_path",     sft_model_path,
+        ]
+        if args.run_gpt4:
+            eval_args.append("--run_gpt4")
+        if os.path.exists(d_high_path):
+            eval_args += ["--pseudo_labels", d_high_path]
+        run_script("evaluate.py", "--config", args.config, *eval_args, *args.overrides)
+
+        logger.info("═" * 60)
+        logger.info("Pipeline complete for method=mwdpo_2phase!")
+        logger.info("═" * 60)
+        return
+
+    # ════════════════════════════════════════════════════════════════════
+    # MWDPO_BC_2PHASE — Multi-Head Bootstrap Calibration DPO with Phase 2
+    # ════════════════════════════════════════════════════════════════════
+    if method == "mwdpo_bc_2phase":
+        bc_cfg = cfg.get("bootstrap_calibration", {})
+        bc_rm_dir = bc_cfg.get(
+            "output_dir",
+            cfg.get("reward_model", {}).get(
+                "output_dir", "outputs/mwdpo_bc_2phase/reward_model"
+            ),
+        )
+        label_base_dir = cfg.get(
+            "multi_weak_label_output_dir",
+            cfg.get("weak_label_output_dir", "outputs/mwdpo_bc_2phase/weak_labels"),
+        )
+
+        d_high_path = args.pseudo_labels or os.path.join(
+            label_base_dir, "d_high", "pseudo_labeled.jsonl"
+        )
+        d_low_path = os.path.join(label_base_dir, "d_low", "pseudo_labeled.jsonl")
+
+        # D_l with C_strong scores (output of compute_strong_confidence.py)
+        sc_cfg = cfg.get("strong_confidence", {})
+        d_low_scored_path = sc_cfg.get(
+            "d_low_scored_path",
+            os.path.join(label_base_dir, "d_low_scored", "pseudo_labeled.jsonl"),
+        )
+
+        # Phase 1 DPO output dir (π_Phase1)
+        phase1_output_dir = cfg.training.get(
+            "output_dir", "outputs/mwdpo_bc_2phase/strong_model_phase1"
+        )
+
+        # Phase 2 final model output dir
+        p2_cfg = cfg.get("phase2_training", cfg.get("training", {}))
+        phase2_output_dir = p2_cfg.get(
+            "output_dir", "outputs/mwdpo_bc_2phase/strong_model_phase2"
+        )
+
+        # ══ Phase 1a: Train MultiHeadRewardModel on D_l ══════════════════════
+        if not args.skip_reward_model:
+            checkpoint_dir = args.reward_model_path or os.path.join(
+                bc_rm_dir, "checkpoint-final"
+            )
+            if os.path.exists(os.path.join(checkpoint_dir, "model.pt")):
+                logger.info(
+                    f"MultiHeadRewardModel already exists at {checkpoint_dir}. Skipping. "
+                    "(Delete checkpoint-final to retrain.)"
+                )
+            else:
+                logger.info("═" * 60)
+                logger.info(
+                    "PHASE 1a: MWDPO_BC_2PHASE — Train MultiHeadRewardModel on D_l "
+                    "(shared backbone + K bootstrap heads)"
+                )
+                logger.info("═" * 60)
+                run_script("train_bootstrap_reward_model.py", "--config", args.config,
+                           *debug_flag, *args.overrides)
+        else:
+            logger.info("Skipping reward model training (--skip_reward_model)")
+
+        # ══ Phase 1b: Calibrate + Label D_u → D_h ∪ D_l ════════════════════
+        if not args.skip_labeling and not args.pseudo_labels:
+            logger.info("═" * 60)
+            logger.info(
+                "PHASE 1b: MWDPO_BC_2PHASE — Calibrate T_k + Label D_u → D_h + D_l"
+            )
+            logger.info("═" * 60)
+            extra = []
+            if args.reward_model_path:
+                extra += ["--checkpoint_dir", args.reward_model_path]
+            run_script("label_bootstrap_calibration.py", "--config", args.config,
+                       *extra, *debug_flag, *args.overrides)
+        else:
+            if args.pseudo_labels:
+                logger.info(f"Using pre-computed D_h: {args.pseudo_labels}")
+            elif args.skip_labeling:
+                logger.info("Skipping labeling (--skip_labeling)")
+
+        # ══ Phase 2a: SFT Strong Model on D_h ══════════════════════════════
+        if not args.skip_sft:
+            logger.info("═" * 60)
+            logger.info("PHASE 2a: MWDPO_BC_2PHASE — SFT Strong Model on D_h → π_SFT")
+            logger.info("═" * 60)
+            sft_resume_args = (
+                ["--resume_sft_checkpoint", args.resume_sft_checkpoint]
+                if args.resume_sft_checkpoint else []
+            )
+            run_script("train_sft.py", "--config", args.config,
+                       "--pseudo_labels", d_high_path,
+                       *sft_resume_args, *debug_flag, *args.overrides)
+        else:
+            logger.info("Skipping SFT on D_h (--skip_sft)")
+
+        # ══ Phase 2b: Standard DPO on D_h → π_Phase1 ══════════════════════
+        if not getattr(args, "skip_phase1_dpo", False):
+            logger.info("═" * 60)
+            logger.info("PHASE 2b: MWDPO_BC_2PHASE — Standard DPO on D_h → π_Phase1")
+            logger.info("═" * 60)
+            extra_args = ["--sft_model_path", sft_model_path,
+                          "--pseudo_labels", d_high_path]
+            if args.resume_dpo_checkpoint:
+                extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
+            run_script("train_strong.py", "--config", args.config,
+                       *extra_args, *debug_flag, *args.overrides)
+        else:
+            logger.info("Skipping Phase 1 DPO on D_h (--skip_phase1_dpo)")
+
+        # ══ Phase 2c: Pre-compute C_strong for D_l ═════════════════════════
+        if not getattr(args, "skip_phase2", False):
+            logger.info("═" * 60)
+            logger.info("PHASE 2c: MWDPO_BC_2PHASE — Pre-compute C_strong for D_l")
+            logger.info(f"  π_Phase1 : {phase1_output_dir}")
+            logger.info(f"  π_SFT    : {sft_model_path}")
+            logger.info(f"  D_l      : {d_low_path}")
+            logger.info(f"  Output   : {d_low_scored_path}")
+            logger.info("═" * 60)
+
+            allow_neg_flag = (["--allow_negative"]
+                              if sc_cfg.get("allow_negative", False) else [])
+            batch_size_arg = ["--batch_size", str(int(sc_cfg.get("batch_size", 4)))]
+            run_script(
+                "compute_strong_confidence.py",
+                "--config", args.config,
+                "--phase1_model_path", phase1_output_dir,
+                "--sft_model_path", sft_model_path,
+                "--d_low_path", d_low_path,
+                "--output_path", d_low_scored_path,
+                *allow_neg_flag,
+                *batch_size_arg,
+                *debug_flag, *args.overrides,
+            )
+
+            # ══ Phase 2d: Debate-Weighted DPO on D_l → π_Final ════════════
+            logger.info("═" * 60)
+            logger.info("PHASE 2d: MWDPO_BC_2PHASE — Debate-Weighted DPO on D_l → π_Final")
+            logger.info("═" * 60)
+            phase2_extra = [
+                "--sft_model_path",   sft_model_path,
+                "--phase1_model_path", phase1_output_dir,
+                "--pseudo_labels",    d_low_scored_path,
+            ]
+            if args.resume_dpo_checkpoint:
+                phase2_extra += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
+            run_script("train_strong.py", "--config", args.config,
+                       *phase2_extra, *debug_flag, *args.overrides)
+        else:
+            logger.info("Skipping Phase 2 (--skip_phase2). Using Phase 1 model as final.")
+            phase2_output_dir = phase1_output_dir
+
+        # ══ Phase 3: Evaluation (GRA) ════════════════════════════════════
+        logger.info("═" * 60)
+        logger.info("PHASE 3: MWDPO_BC_2PHASE — Evaluation (GRA)")
+        logger.info("═" * 60)
+        eval_args = [
+            "--aligned_model_path", phase2_output_dir,
+            "--sft_model_path",     sft_model_path,
+        ]
+        if args.run_gpt4:
+            eval_args.append("--run_gpt4")
+        if os.path.exists(d_high_path):
+            eval_args += ["--pseudo_labels", d_high_path]
+        run_script("evaluate.py", "--config", args.config, *eval_args, *args.overrides)
+
+        logger.info("═" * 60)
+        logger.info("Pipeline complete for method=mwdpo_bc_2phase!")
+        logger.info("═" * 60)
+        return
+
     raise ValueError(
         f"Unknown method: '{method}'. "
-        "Choose: wdpo, cwpo, mwdpo, mwdpo_bootstrap_calibration, baseline_dpo"
+        "Choose: wdpo, cwpo, mwdpo, mwdpo_bootstrap_calibration, baseline_dpo, "
+        "super_multi_dpo, mwdpo_2phase, mwdpo_bc_2phase"
     )
 
 

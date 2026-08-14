@@ -1,5 +1,6 @@
 """
-Multi-Head Reward Model for MWDPO bootstrap calibration (1a) and 2-phase training.
+Multi-Head Reward Model for MWDPO bootstrap calibration (1a), 2-phase training,
+and Super_multi_dpo (LoRA ensemble).
 
 Architecture (original / Phase 2):
     backbone (pretrained LM, shared)
@@ -8,18 +9,27 @@ Architecture (original / Phase 2):
         ↓
     (batch, K) score tensor
 
-2-Phase training (new):
+2-Phase training (MWDPO_BC):
     Phase 1: Train ScalarRewardModel (backbone + 1 linear head) on D_l.
              Backbone learns a high-quality reward feature representation.
     Phase 2: Load Phase 1 backbone, freeze it, train K heads independently
              (MLPRewardHead with dropout for forced diversity + bootstrap masks).
+
+Super_multi_dpo:
+    Phase 1 (Warmup): Train MultiHeadRewardModel (backbone + K linear heads) jointly.
+    Phase 2 (Ensemble): Freeze backbone, attach K LoRA adapters, train each
+                        LoRA_k + head_k independently → K diverse reward models.
+    Each (backbone + LoRA_k + head_k) is wrapped as LoRARewardModel — interface-
+    compatible with ScalarRewardModel for use with MultiWeakLabeler.
 
 Head types (configurable via head_type):
     "linear" — nn.Linear(hidden_size, 1)          [backward compatible default]
     "mlp"    — Linear → LayerNorm → GELU → Dropout → Linear  [diverse projections]
 """
 
+import copy
 import json
+import logging
 import os
 from typing import List, Optional, Tuple
 
@@ -27,6 +37,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
+
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -377,6 +389,132 @@ class MultiHeadRewardModel(nn.Module):
             masks.append(mask)
         return masks
 
+    def attach_lora_adapters(
+        self,
+        lora_r: int = 8,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.05,
+        lora_target_modules: Optional[List[str]] = None,
+    ) -> List[Tuple[nn.Module, nn.Module]]:
+        """
+        Phase 2 — Super_multi_dpo: Freeze backbone, create K LoRA-adapted copies.
+
+        For each head k:
+            1. Deep-copy the (now frozen) backbone.
+            2. Wrap the copy with a fresh LoraConfig (random LoRA init → diversity).
+            3. Pair with self.heads[k].
+
+        The returned list contains K (lora_backbone_k, head_k) tuples ready for
+        independent training by SuperMultiRewardTrainer.  The original self.backbone
+        is left frozen in-place; self.heads are NOT copied (each tuple holds a
+        reference to the original head nn.Module).
+
+        Args:
+            lora_r:               LoRA rank
+            lora_alpha:           LoRA alpha scaling
+            lora_dropout:         LoRA dropout (adds diversity on top of random init)
+            lora_target_modules:  target module names (None = PEFT auto-detect)
+
+        Returns:
+            list of K (lora_backbone, head) tuples, length == self.num_heads
+        """
+        try:
+            from peft import LoraConfig, get_peft_model
+        except ImportError:
+            raise ImportError("peft is required for LoRA. Install: pip install peft")
+
+        # Freeze backbone (in-place, permanent for this instance)
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+        self.backbone.eval()
+        self.backbone_frozen = True
+        logger.info(
+            f"[attach_lora_adapters] Backbone frozen. "
+            f"Creating {self.num_heads} LoRA-adapted copies "
+            f"(r={lora_r}, alpha={lora_alpha}, dropout={lora_dropout})."
+        )
+
+        lora_pairs: List[Tuple[nn.Module, nn.Module]] = []
+        for k in range(self.num_heads):
+            # Independent deep-copy → each adapter gets its own random init
+            backbone_k = copy.deepcopy(self.backbone)
+            lora_cfg = LoraConfig(
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                target_modules=lora_target_modules,
+                bias="none",
+            )
+            lora_backbone_k = get_peft_model(backbone_k, lora_cfg)
+            n_lora = sum(p.numel() for p in lora_backbone_k.parameters() if p.requires_grad)
+            n_head = sum(p.numel() for p in self.heads[k].parameters())
+            logger.info(
+                f"  LoRA model {k}: lora_params={n_lora:,}, head_params={n_head:,}"
+            )
+            lora_pairs.append((lora_backbone_k, self.heads[k]))
+
+        return lora_pairs
+
+
+# --------------------------------------------------------------------------- #
+#  LoRA Reward Model — Super_multi_dpo                                         #
+# --------------------------------------------------------------------------- #
+
+class LoRARewardModel(nn.Module):
+    """
+    Single LoRA-adapted reward model for Super_multi_dpo Phase 2.
+
+    Architecture: frozen_backbone + LoRA_k adapter (trainable) + linear head_k (trainable).
+
+    Interface-compatible with ScalarRewardModel:
+        forward(input_ids, attention_mask) → (batch,) scores
+
+    This allows LoRARewardModel instances to be passed directly to MultiWeakLabeler
+    as drop-in replacements for ScalarRewardModel instances.
+
+    Created by MultiHeadRewardModel.attach_lora_adapters().
+    """
+
+    def __init__(self, lora_backbone: nn.Module, head: nn.Module) -> None:
+        super().__init__()
+        self.backbone = lora_backbone  # PeftModel wrapping frozen AutoModel
+        self.head = head               # nn.Linear(hidden_size, 1)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute scalar reward score.
+
+        Args:
+            input_ids:      (batch, seq_len)
+            attention_mask: (batch, seq_len)
+
+        Returns:
+            scores: (batch,)
+        """
+        outputs = self.backbone(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+        last_hidden = outputs.last_hidden_state   # (batch, seq_len, hidden)
+        # Last non-padding token (same as ScalarRewardModel._get_last_token_hidden)
+        seq_lengths = attention_mask.sum(dim=-1) - 1   # (batch,)
+        batch_idx = torch.arange(last_hidden.size(0), device=last_hidden.device)
+        last_token_hidden = last_hidden[batch_idx, seq_lengths]  # (batch, hidden)
+        scores = self.head(last_token_hidden).squeeze(-1)        # (batch,)
+        return scores
+
+    def bradley_terry_loss(
+        self,
+        score_chosen: torch.Tensor,
+        score_rejected: torch.Tensor,
+    ) -> torch.Tensor:
+        """BT loss: -log σ(s_chosen - s_rejected)"""
+        return -F.logsigmoid(score_chosen - score_rejected).mean()
+
 
 # --------------------------------------------------------------------------- #
 #  Save / Load                                                                 #
@@ -529,3 +667,126 @@ def load_multi_head_reward_model(
     model.load_state_dict(state_dict)
 
     return model, tokenizer
+
+
+# --------------------------------------------------------------------------- #
+#  LoRA reward model save / load — Super_multi_dpo                             #
+# --------------------------------------------------------------------------- #
+
+def save_lora_reward_models(
+    lora_model_pairs: List[Tuple[nn.Module, nn.Module]],
+    tokenizer,
+    output_dir: str,
+    backbone_name: str,
+) -> None:
+    """
+    Save K LoRA reward models to output_dir/model_{k}/checkpoint-final/.
+
+    Each model k saves:
+        adapter_model.bin / adapter_config.json  — PEFT LoRA adapter weights
+        head.pt                                  — linear head state dict
+        tokenizer_*                              — tokenizer files
+        metadata.json                            — model_type, backbone_name, index
+
+    Args:
+        lora_model_pairs: list of (lora_backbone_k, head_k) tuples, length K
+        tokenizer:        shared tokenizer
+        output_dir:       base directory; model k → output_dir/model_k/checkpoint-final/
+        backbone_name:    HF model ID of the base backbone
+    """
+    for k, (lora_backbone, head) in enumerate(lora_model_pairs):
+        model_dir = os.path.join(output_dir, f"model_{k}", "checkpoint-final")
+        os.makedirs(model_dir, exist_ok=True)
+
+        # 1. LoRA adapter weights (adapter_model.bin + adapter_config.json)
+        lora_backbone.save_pretrained(model_dir)
+
+        # 2. Head weights
+        torch.save(head.state_dict(), os.path.join(model_dir, "head.pt"))
+
+        # 3. Tokenizer
+        try:
+            tokenizer.save_pretrained(model_dir)
+        except Exception as e:
+            logger.warning(f"Could not save tokenizer for LoRA model {k}: {e}")
+
+        # 4. Metadata
+        metadata = {
+            "backbone_name": backbone_name,
+            "model_type": "lora_reward_model",
+            "lora_model_index": k,
+        }
+        with open(os.path.join(model_dir, "metadata.json"), "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        logger.info(f"[LoRA] Saved model {k} → {model_dir}")
+
+
+def load_lora_reward_model(
+    checkpoint_dir: str,
+    cache_dir: Optional[str] = None,
+    dtype: torch.dtype = torch.bfloat16,
+) -> Tuple["LoRARewardModel", "PreTrainedTokenizerBase"]:
+    """
+    Load one LoRA reward model from a checkpoint directory.
+
+    Expects:
+        checkpoint_dir/adapter_model.bin   — LoRA adapter weights
+        checkpoint_dir/adapter_config.json — LoRA config
+        checkpoint_dir/head.pt             — linear head state dict
+        checkpoint_dir/metadata.json       — backbone_name
+
+    Returns:
+        (LoRARewardModel, tokenizer)
+    """
+    try:
+        from peft import PeftModel
+    except ImportError:
+        raise ImportError("peft is required. Install: pip install peft")
+
+    metadata_path = os.path.join(checkpoint_dir, "metadata.json")
+    if not os.path.exists(metadata_path):
+        raise FileNotFoundError(f"metadata.json not found in {checkpoint_dir}")
+
+    with open(metadata_path) as f:
+        metadata = json.load(f)
+
+    backbone_name = metadata["backbone_name"]
+
+    # Load base backbone
+    backbone = AutoModel.from_pretrained(
+        backbone_name, cache_dir=cache_dir, torch_dtype=dtype
+    )
+    # Wrap with LoRA adapter
+    lora_backbone = PeftModel.from_pretrained(backbone, checkpoint_dir)
+
+    # Load head
+    hidden_size = backbone.config.hidden_size
+    head = nn.Linear(hidden_size, 1, bias=False).to(dtype)
+    head_path = os.path.join(checkpoint_dir, "head.pt")
+    if not os.path.exists(head_path):
+        raise FileNotFoundError(f"head.pt not found in {checkpoint_dir}")
+    head.load_state_dict(torch.load(head_path, map_location="cpu"))
+
+    # Tokenizer
+    tok_files = [
+        "tokenizer_config.json", "vocab.json", "tokenizer.json",
+        "special_tokens_map.json", "merges.txt",
+    ]
+    has_saved_tok = any(
+        os.path.exists(os.path.join(checkpoint_dir, f)) for f in tok_files
+    )
+    if has_saved_tok:
+        tokenizer = AutoTokenizer.from_pretrained(
+            checkpoint_dir, use_fast=True, trust_remote_code=True
+        )
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(
+            backbone_name, cache_dir=cache_dir, use_fast=True, trust_remote_code=True
+        )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    return LoRARewardModel(lora_backbone, head), tokenizer
+

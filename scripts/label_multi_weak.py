@@ -33,15 +33,49 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import json
 import torch
 
 from src.data import get_dataset
 from src.models.reward_model import load_reward_model_and_tokenizer
+from src.models.multi_head_reward_model import load_lora_reward_model
 from src.weak_labeler import MultiWeakLabeler
 from src.weak_labeler.base_labeler import BaseWeakLabeler
-from src.utils import load_config, print_config, set_seed, setup_logging
+from src.utils import load_config, print_config, set_seed, setup_logging, generate_analysis_txt
 
 logger = logging.getLogger(__name__)
+
+
+def _load_single_reward_model(rm_dir: str, backbone_name: str, cache_dir, dtype):
+    """
+    Auto-detect and load one reward model from a checkpoint directory.
+
+    If metadata.json says model_type == 'lora_reward_model':
+        → use load_lora_reward_model() (Super_multi_dpo LoRA model)
+    Otherwise:
+        → use load_reward_model_and_tokenizer() (ScalarRewardModel / MWDPO)
+
+    Returns:
+        (model, tokenizer)
+    """
+    metadata_path = os.path.join(rm_dir, "metadata.json")
+    is_lora = False
+    if os.path.exists(metadata_path):
+        with open(metadata_path) as f:
+            meta = json.load(f)
+        is_lora = meta.get("model_type") == "lora_reward_model"
+
+    if is_lora:
+        logger.info(f"  [LoRA] Detected LoRA reward model at {rm_dir}")
+        return load_lora_reward_model(rm_dir, cache_dir=cache_dir, dtype=dtype)
+    else:
+        return load_reward_model_and_tokenizer(
+            backbone_name,
+            cache_dir=cache_dir,
+            dtype=dtype,
+            checkpoint_path=rm_dir,
+        )
+
 
 
 def parse_args():
@@ -77,16 +111,28 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # ── Read multi-weak config ─────────────────────────────────────────────
-    mw_cfg = cfg.get("multi_weak", {})
-    num_models = mw_cfg.get("num_models", 3)
-    agreement_mode = mw_cfg.get("agreement_mode", "unanimous")
-    confidence_threshold = float(mw_cfg.get("confidence_threshold", 0.8))
-
-    rm_base_dir = mw_cfg.get(
-        "output_dir",
-        cfg.get("reward_model", {}).get("output_dir", "outputs/mwdpo/reward_models")
-    )
+    # ── Read multi-weak / super_multi config ───────────────────────────────
+    method = cfg.get("method", "mwdpo")
+    if method == "super_multi_dpo":
+        # Super_multi_dpo stores ensemble config under super_multi:
+        ens_cfg = cfg.get("super_multi", {})
+        num_models = int(ens_cfg.get("num_models", 3))
+        agreement_mode = str(ens_cfg.get("agreement_mode", "unanimous"))
+        confidence_threshold = float(ens_cfg.get("confidence_threshold", 0.8))
+        rm_base_dir = ens_cfg.get(
+            "output_dir",
+            cfg.get("reward_model", {}).get("output_dir", "outputs/super_multi_dpo/reward_models")
+        )
+    else:
+        # MWDPO / default: reads from multi_weak:
+        mw_cfg = cfg.get("multi_weak", {})
+        num_models = mw_cfg.get("num_models", 3)
+        agreement_mode = mw_cfg.get("agreement_mode", "unanimous")
+        confidence_threshold = float(mw_cfg.get("confidence_threshold", 0.8))
+        rm_base_dir = mw_cfg.get(
+            "output_dir",
+            cfg.get("reward_model", {}).get("output_dir", "outputs/mwdpo/reward_models")
+        )
 
     # ── Resolve reward model paths ─────────────────────────────────────────
     if args.reward_model_dirs:
@@ -104,34 +150,38 @@ def main():
 
     # Validate all reward model dirs exist
     for i, rm_dir in enumerate(rm_dirs):
-        model_pt = os.path.join(rm_dir, "model.pt")
-        if not os.path.exists(model_pt):
+        # LoRA models use adapter_config.json instead of model.pt
+        has_model_pt  = os.path.exists(os.path.join(rm_dir, "model.pt"))
+        has_lora      = os.path.exists(os.path.join(rm_dir, "adapter_config.json"))
+        if not has_model_pt and not has_lora:
             raise FileNotFoundError(
                 f"Reward model {i} not found at: {rm_dir}\n"
-                f"Expected: {model_pt}\n"
-                f"Run scripts/train_multi_reward_models.py first."
+                f"Expected model.pt (ScalarRewardModel) or adapter_config.json (LoRA model).\n"
+                f"Run scripts/train_multi_reward_models.py or "
+                f"scripts/train_super_multi_reward_model.py first."
             )
 
     logger.info(f"Loading {num_models} reward models from:")
     for i, p in enumerate(rm_dirs):
         logger.info(f"  model_{i}: {p}")
 
-    # ── Load all reward models ─────────────────────────────────────────────
+    # ── Load all reward models (auto-detect ScalarRewardModel vs LoRA) ────
     dtype = torch.bfloat16 if cfg.get("bf16", True) else torch.float32
     reward_models = []
     tokenizer = None  # shared tokenizer (same backbone)
 
     for i, rm_dir in enumerate(rm_dirs):
         logger.info(f"Loading reward model {i} from {rm_dir}...")
-        rm, tok = load_reward_model_and_tokenizer(
-            cfg.weak_model_name,
+        rm, tok = _load_single_reward_model(
+            rm_dir,
+            backbone_name=cfg.weak_model_name,
             cache_dir=cfg.get("cache_dir"),
             dtype=dtype,
-            checkpoint_path=rm_dir,
         )
         reward_models.append(rm)
         if tokenizer is None:
             tokenizer = tok  # all models share the same tokenizer
+
 
     # ── Load D_u ──────────────────────────────────────────────────────────
     logger.info(f"Loading dataset: {cfg.dataset_name}")
@@ -145,6 +195,11 @@ def main():
     _, unlabeled_ds = train_ds.get_labeled_unlabeled_split()
     max_samples = args.max_samples
     logger.info(f"D_u size: {len(unlabeled_ds)}")
+
+    # Keep a reference to the original D_u samples (used later for proxy accuracy)
+    original_samples = list(unlabeled_ds)
+    if max_samples is not None:
+        original_samples = original_samples[:max_samples]
 
     # ── Build MultiWeakLabeler ────────────────────────────────────────────
     labeler = MultiWeakLabeler(
@@ -194,6 +249,21 @@ def main():
     combined_path = os.path.join(output_base, "pseudo_labeled.jsonl")
     labeler.save(d_high + d_low, combined_path)
     logger.info(f"Combined D_h+D_l saved to: {combined_path}")
+
+    # ── Write analysis.txt ────────────────────────────────────────────────
+    mw_cfg = cfg.get("multi_weak", {}) or cfg.get("super_multi", {}) or {}
+    num_models = int(mw_cfg.get("num_models", len(rm_dirs)))
+    analysis_path = generate_analysis_txt(
+        output_dir=output_base,
+        cfg=cfg,
+        method=method,
+        d_high=d_high,
+        d_low=d_low,
+        original_samples=original_samples,
+        config_path=args.config,
+        num_models=num_models,
+    )
+    logger.info(f"Analysis report saved to: {analysis_path}")
 
 
 if __name__ == "__main__":
