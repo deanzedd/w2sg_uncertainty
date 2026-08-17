@@ -33,7 +33,7 @@ max_prompt_length: 512
 
 # ── Model config ──────────────────────────────────────────────────────────────
 weak_model_name: Qwen/Qwen2.5-0.5B
-strong_model_name: Qwen/Qwen2.5-1.5B
+strong_model_name: Qwen/Qwen2.5-7B
 
 # ── Multi-GPU ─────────────────────────────────────────────────────────────────
 device_map: null
@@ -49,13 +49,13 @@ lora_target_modules: null
 multi_weak:
   num_models: 3
   seeds: [42, 123, 456]
-  agreement_mode: unanimous_with_threshold
+  agreement_mode: unanimous
   confidence_threshold: 0.8
-  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/reward_models
+  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-7B/seed42/reward_models
 
 # ── D_h and D_l label output dirs ────────────────────────────────────────────
-multi_weak_label_output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels
-weak_label_output_dir:       outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels
+multi_weak_label_output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
+weak_label_output_dir:       outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
 
 # ── Reward Model Training (same as mwdpo) ────────────────────────────────────
 reward_model:
@@ -69,11 +69,11 @@ reward_model:
   fp16: false
   logging_steps: 50
   save_steps: 3000
-  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/reward_models
+  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-7B/seed42/reward_models
 
 # ── Phase 2a: SFT on D_h (same as mwdpo) ────────────────────────────────────
 sft:
-  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/sft_strong
+  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-7B/seed42/sft_strong
   num_train_epochs: 3
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 4
@@ -87,7 +87,7 @@ sft:
 
 # ── Phase 2b: Standard DPO on D_h (same as mwdpo) ───────────────────────────
 training:
-  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase1
+  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-7B/seed42/strong_model_phase1
   num_train_epochs: 5
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 2
@@ -110,10 +110,10 @@ training:
 # (used by compute_strong_confidence.py)
 strong_confidence:
   # Path where D_l with C_strong scores is saved
-  d_low_scored_path: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels/d_low_scored/pseudo_labeled.jsonl
+  d_low_scored_path: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-7B/seed42/weak_labels/d_low_scored/pseudo_labeled.jsonl
   # allow_negative: if true, confidence_weight = raw C_strong ∈ [-1,1]
   #                 if false (default), confidence_weight = max(C_strong, 0.0)
-  allow_negative: false
+  allow_negative: true
   batch_size: 8
 
 # ── Phase 2d: 🆕 Debate-Weighted DPO on D_l ──────────────────────────────────
@@ -123,8 +123,8 @@ strong_confidence:
 #   - epochs: 2   (few epochs to prevent memorizing noise)
 #   - max_grad_norm: 0.5  (tighter clipping for stability)
 phase2_training:
-  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase2
-  num_train_epochs: 2
+  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-7B/seed42/strong_model_phase2
+  num_train_epochs: 5
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 2
   gradient_accumulation_steps: 4
@@ -143,6 +143,6 @@ phase2_training:
   gradient_checkpointing: true
 
 eval:
-  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/eval
+  output_dir: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-7B/seed42/eval
 
-wandb_run_name: aTrung-mwdpo_2phase-hh_rlhf-qwen-0.5b-1.5B
+wandb_run_name: aBinh-mwdpo_2phase-hh_rlhf-qwen-0.5b-7B

@@ -126,7 +126,7 @@ strong_confidence:
   d_low_scored_path: outputs/mwdpo_bc_2phase/hh_rlhf/Qwen2.5-7B/seed42/weak_labels/d_low_scored/pseudo_labeled.jsonl
   # allow_negative: if true, confidence_weight = raw C_strong ∈ [-1,1]
   #                 if false (default), confidence_weight = max(C_strong, 0.0)
-  allow_negative: false
+  allow_negative: true
   batch_size: 4  # Smaller batch for 7B model
 
 # ── Phase 2d: 🆕 Debate-Weighted DPO on D_l ──────────────────────────────────

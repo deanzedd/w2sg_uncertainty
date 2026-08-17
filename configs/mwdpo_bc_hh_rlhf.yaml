@@ -151,4 +151,4 @@ training:
 eval:
   output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/eval
 
-wandb_run_name: aBinh_mwdpo_1phase_threshold0.8_linear_boots-hh_rlhf-qwen-0.5b-7b-phase1
+wandb_run_name: aBinh_mwdpo_1phase_threshold0.8_linear_boots-hh_rlhf-qwen-0.5b-7b
