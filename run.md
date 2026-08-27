@@ -10,13 +10,9 @@ pip install -r requirements.txt
 
 ### 2. Run pipeline mwdpo phase 1 and mwdpo_bc
 ```bash
-### mwdpo_bc
-python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf.yaml
-
-### mwdpo
+python pipeline/run_pipeline.py --config configs/mwdpo_bc_ace_hh_rlhf.yaml
 python pipeline/run_pipeline.py --config configs/mwdpo_hh_rlhf.yaml
-
-### wdpo
 python pipeline/run_pipeline.py --config configs/wdpo_hh_rlhf.yaml
+python pipeline/run_pipeline.py --config configs/cwpo_hh_rlhf.yaml
 ```
 

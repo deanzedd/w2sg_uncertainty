@@ -12,7 +12,7 @@ weak_model_name: Qwen/Qwen2.5-0.5B
 # Qwen2.5-0.5B alternative:
 # weak_model_name: Qwen/Qwen2.5-0.5B
 
-strong_model_name: Qwen/Qwen2.5-1.5B
+strong_model_name: Qwen/Qwen2.5-7B
 # Alternative strong models:
 #   facebook/opt-2.7b        → device_map: null (single GPU, ~5GB)
 #   facebook/opt-6.7b        → device_map: auto (multi-GPU)
@@ -40,11 +40,11 @@ reward_model:
   learning_rate: 1.0e-5                  # paper spec (Bảng 7)
   weight_decay: 0.0                      # paper Bảng 7: dùng Adam (không có weight decay)
   warmup_ratio: 0.0                      # paper Bảng 7: không đề cập warmup → không dùng
-  output_dir: outputs/cwpo/hh_rlhf/Qwen2.5-1.5B/reward_model
+  output_dir: outputs/cwpo/hh_rlhf/Qwen2.5-7B/reward_model
 
 # ── Strong Model SFT (Phase 1a) ─────────────────────────────────────────────
 sft:
-  output_dir: outputs/cwpo/hh_rlhf/Qwen2.5-1.5B/sft_strong
+  output_dir: outputs/cwpo/hh_rlhf/Qwen2.5-7B/sft_strong
   num_train_epochs: 3                   # 3 epochs for CWPO per spec (Bảng 9)
   per_device_train_batch_size: 4        # opt-2.7b: 1 to avoid OOM; grad_accum=8 → eff=8
   per_device_eval_batch_size: 4
@@ -58,7 +58,7 @@ sft:
 
 # ── Strong Model CW-DPO Training (Phase 3) ─────────────────────────────────
 training:
-  output_dir: outputs/cwpo/hh_rlhf/Qwen2.5-1.5B/strong_model
+  output_dir: outputs/cwpo/hh_rlhf/Qwen2.5-7B/strong_model
   num_train_epochs: 5
   per_device_train_batch_size: 2
   gradient_accumulation_steps: 8
@@ -70,8 +70,8 @@ training:
   gradient_checkpointing: true          # True per spec
 
 eval:
-  output_dir: outputs/cwpo/hh_rlhf/Qwen2.5-1.5B/eval
+  output_dir: outputs/cwpo/hh_rlhf/Qwen2.5-7B/eval
 
-weak_label_output_dir: outputs/cwpo/hh_rlhf/Qwen2.5-1.5B/weak_labels
+weak_label_output_dir: outputs/cwpo/hh_rlhf/Qwen2.5-7B/weak_labels
 
-wandb_run_name: server-aTrung-cwpo-hh_rlhf-qwen-0.5b-1.5b
+wandb_run_name: aBinh-cwpo-hh_rlhf-qwen-0.5b-7b

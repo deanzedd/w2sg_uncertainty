@@ -35,7 +35,7 @@ max_prompt_length: 512
 
 # ── Model config ──────────────────────────────────────────────────────────────
 weak_model_name: Qwen/Qwen2.5-0.5B
-strong_model_name: Qwen/Qwen2.5-1.5B
+strong_model_name: Qwen/Qwen2.5-7B
 
 # ── Multi-GPU ─────────────────────────────────────────────────────────────────
 device_map: null
@@ -60,11 +60,11 @@ bootstrap_calibration:
   cal_val_ratio: 0.1
   agreement_mode: unanimous_with_threshold
   confidence_threshold: 0.8
-  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/reward_model
+  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-7B/seed42/reward_model
 
 # ── D_h / D_l (reuse existing labels for ACE Phase-B pilots) ──────────────────
-multi_weak_label_output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels
-weak_label_output_dir:       outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels
+multi_weak_label_output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
+weak_label_output_dir:       outputs/mwdpo_ace/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
 
 # ── Reward Model Training ─────────────────────────────────────────────────────
 reward_model:
@@ -78,11 +78,11 @@ reward_model:
   fp16: false
   logging_steps: 50
   save_steps: 3000
-  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/reward_model
+  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-7B/seed42/reward_model
 
 # ── Phase 2a: SFT on D_h ─────────────────────────────────────────────────────
 sft:
-  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/sft_strong
+  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-7B/seed42/sft_strong
   num_train_epochs: 3
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 4
@@ -99,7 +99,7 @@ sft:
 # ── Phase 2b: Anchor DPO on D_h (E_A=4) ──────────────────────────────────────
 # When --skip_phase1_dpo, an existing Phase1 checkpoint under this path is reused.
 training:
-  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase1
+  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-7B/seed42/strong_model_phase1
   num_train_epochs: 4
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 2
@@ -120,9 +120,9 @@ training:
 
 # ── Phase 2c: C_strong + ACE union path ───────────────────────────────────────
 strong_confidence:
-  d_low_scored_path: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels/d_low_scored/pseudo_labeled.jsonl
+  d_low_scored_path: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-7B/seed42/weak_labels/d_low_scored/pseudo_labeled.jsonl
   # ACE union: D_h (w=1) ∪ scored D_l (C_combined)
-  d_weak_scored_path: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels/d_weak_scored/pseudo_labeled.jsonl
+  d_weak_scored_path: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-7B/seed42/weak_labels/d_weak_scored/pseudo_labeled.jsonl
 
   weighting_mode: linear_combined
   # α=0.3 → 30% weak + 70% strong on residual D_l
@@ -132,7 +132,7 @@ strong_confidence:
 # ── Phase 2d: ACE coverage — 1 epoch on D_weak asymmetric ────────────────────
 # Writes to ACE-specific output_dir (does not overwrite legacy phase2).
 phase2_training:
-  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase2
+  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-7B/seed42/strong_model_phase2
   phase2_data_mode: d_weak_asymmetric
   num_train_epochs: 1
   per_device_train_batch_size: 4
@@ -153,6 +153,6 @@ phase2_training:
   gradient_checkpointing: true
 
 eval:
-  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/eval
+  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-7B/seed42/eval
 
-wandb_run_name: aTrung-mwdpo_bc_ace-hh_rlhf-qwen-0.5b-1.5B
+wandb_run_name: aBinh-mwdpo_bc_ace-hh_rlhf-qwen-0.5b-7B
