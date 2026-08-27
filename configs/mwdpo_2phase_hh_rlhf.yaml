@@ -110,10 +110,22 @@ training:
 # (used by compute_strong_confidence.py)
 strong_confidence:
   # Path where D_l with C_strong scores is saved
-  d_low_scored_path: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-7B/seed42/weak_labels/d_low_scored/pseudo_labeled.jsonl
-  # allow_negative: if true, confidence_weight = raw C_strong ∈ [-1,1]
-  #                 if false (default), confidence_weight = max(C_strong, 0.0)
-  allow_negative: true
+  d_low_scored_path: outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels/d_low_scored/pseudo_labeled.jsonl
+
+  # Weighting mode for confidence_weight used in Phase 2d training:
+  #   strong_only       : max(C_strong, 0)                     [only strong signal]
+  #   strong_raw        : C_strong ∈ [-1,1]                    [allow negative, legacy allow_negative=true]
+  #   linear_combined   : α·C_weak_norm + (1-α)·max(C_strong,0)  [from proposal — RECOMMENDED]
+  #   multiplicative    : C_weak_norm · max(C_strong,0)         [conservative, both must agree]
+  #   strong_gated_weak : C_weak_norm if C_strong>0 else 0      [strong as binary gate]
+  # C_weak_norm = 2·(C_weak - 0.5) rescales [0.5,1]→[0,1] to match C_strong scale.
+  weighting_mode: linear_combined
+
+  # α for linear_combined: weight of C_weak vs C_strong
+  # α=0.3 → 30% weak + 70% strong (trust strong model more on residual D_l)
+  # α=0.0 → pure strong_only, α=1.0 → pure weak
+  alpha: 0.3
+
   batch_size: 8
 
 # ── Phase 2d: 🆕 Debate-Weighted DPO on D_l ──────────────────────────────────

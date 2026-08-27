@@ -180,6 +180,64 @@ def run_script(script_name: str, *extra_args):
     return result.returncode
 
 
+def resolve_phase2_train_labels(
+    cfg,
+    d_high_path: str,
+    d_low_scored_path: str,
+    label_base_dir: str,
+    debug: bool = False,
+    debug_n: int = 64,
+) -> str:
+    """
+    Resolve Phase 2d --pseudo_labels path from phase2_training.phase2_data_mode.
+
+    d_low (default): scored D_l only.
+    d_weak_asymmetric: merge D_h (w=1) ∪ scored D_l → d_weak_scored jsonl.
+
+    When debug=True and mode is d_weak_asymmetric, truncate D_h to debug_n rows so
+    the ACE union matches the truncated scored D_l from compute_strong_confidence --debug.
+    """
+    from src.utils.phase2_train_data import build_phase2_train_jsonl
+
+    p2_cfg = cfg.get("phase2_training", {})
+    sc_cfg = cfg.get("strong_confidence", {})
+    mode = str(p2_cfg.get("phase2_data_mode", "d_low"))
+    d_weak_scored_path = sc_cfg.get(
+        "d_weak_scored_path",
+        os.path.join(label_base_dir, "d_weak_scored", "pseudo_labeled.jsonl"),
+    )
+
+    merge_d_high = d_high_path
+    if debug and mode == "d_weak_asymmetric":
+        # Keep ACE smoke cheap and size-matched to scored D_l (--debug truncates to 64).
+        import json as _json
+        dbg_dir = os.path.join(label_base_dir, "d_high_debug")
+        os.makedirs(dbg_dir, exist_ok=True)
+        merge_d_high = os.path.join(dbg_dir, "pseudo_labeled.jsonl")
+        n_written = 0
+        with open(d_high_path, "r", encoding="utf-8") as src, open(
+            merge_d_high, "w", encoding="utf-8"
+        ) as dst:
+            for line in src:
+                line = line.strip()
+                if not line:
+                    continue
+                dst.write(line + "\n")
+                n_written += 1
+                if n_written >= debug_n:
+                    break
+        logger.info(
+            f"[DEBUG] Truncated D_h to {n_written} samples for ACE merge: {merge_d_high}"
+        )
+
+    return build_phase2_train_jsonl(
+        phase2_data_mode=mode,
+        d_high_path=merge_d_high,
+        d_low_scored_path=d_low_scored_path,
+        d_weak_scored_path=d_weak_scored_path,
+    )
+
+
 def main():
     args = parse_args()
     cfg = load_config(args.config, args.overrides)
@@ -824,9 +882,14 @@ def main():
             logger.info(f"  Output   : {d_low_scored_path}")
             logger.info("═" * 60)
 
-            # allow_negative flag: pass if set in config
-            allow_neg_flag = (["--allow_negative"]
-                              if sc_cfg.get("allow_negative", False) else [])
+            # weighting_mode: read from config, with backward compat for allow_negative
+            _wm = sc_cfg.get("weighting_mode", None)
+            if _wm is None and sc_cfg.get("allow_negative", False):
+                _wm = "strong_raw"  # backward compat
+            weighting_mode_args = (["--weighting_mode", str(_wm)] if _wm else [])
+            # alpha: only pass for linear_combined
+            _alpha = sc_cfg.get("alpha", None)
+            alpha_args = (["--alpha", str(float(_alpha))] if _alpha is not None else [])
             batch_size_arg = ["--batch_size", str(int(sc_cfg.get("batch_size", 8)))]
             run_script(
                 "compute_strong_confidence.py",
@@ -835,19 +898,31 @@ def main():
                 "--sft_model_path", sft_model_path,
                 "--d_low_path", d_low_path,
                 "--output_path", d_low_scored_path,
-                *allow_neg_flag,
+                *weighting_mode_args,
+                *alpha_args,
                 *batch_size_arg,
                 *debug_flag, *args.overrides,
             )
 
-            # ══ Phase 2d: Debate-Weighted DPO on D_l → π_Final ════════════
+            # Resolve Phase 2d data: D_l-only (legacy) or ACE D_weak asymmetric
+            phase2_labels = resolve_phase2_train_labels(
+                cfg, d_high_path, d_low_scored_path, label_base_dir,
+                debug=bool(args.debug),
+            )
+
+            # ══ Phase 2d: Debate-Weighted / ACE Coverage DPO → π_Final ════
+            _p2_mode = str(cfg.get("phase2_training", {}).get("phase2_data_mode", "d_low"))
             logger.info("═" * 60)
-            logger.info("PHASE 2d: MWDPO_2PHASE — Debate-Weighted DPO on D_l → π_Final")
+            logger.info(
+                f"PHASE 2d: MWDPO_2PHASE — Weighted DPO "
+                f"(phase2_data_mode={_p2_mode}) → π_Final"
+            )
+            logger.info(f"  Phase2 labels: {phase2_labels}")
             logger.info("═" * 60)
             phase2_extra = [
                 "--sft_model_path",   sft_model_path,
                 "--phase1_model_path", phase1_output_dir,
-                "--pseudo_labels",    d_low_scored_path,
+                "--pseudo_labels",    phase2_labels,
             ]
             if args.resume_dpo_checkpoint:
                 phase2_extra += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
@@ -994,8 +1069,14 @@ def main():
             logger.info(f"  Output   : {d_low_scored_path}")
             logger.info("═" * 60)
 
-            allow_neg_flag = (["--allow_negative"]
-                              if sc_cfg.get("allow_negative", False) else [])
+            # weighting_mode: read from config, with backward compat for allow_negative
+            _wm = sc_cfg.get("weighting_mode", None)
+            if _wm is None and sc_cfg.get("allow_negative", False):
+                _wm = "strong_raw"  # backward compat
+            weighting_mode_args = (["--weighting_mode", str(_wm)] if _wm else [])
+            # alpha: only pass for linear_combined
+            _alpha = sc_cfg.get("alpha", None)
+            alpha_args = (["--alpha", str(float(_alpha))] if _alpha is not None else [])
             batch_size_arg = ["--batch_size", str(int(sc_cfg.get("batch_size", 4)))]
             run_script(
                 "compute_strong_confidence.py",
@@ -1004,19 +1085,31 @@ def main():
                 "--sft_model_path", sft_model_path,
                 "--d_low_path", d_low_path,
                 "--output_path", d_low_scored_path,
-                *allow_neg_flag,
+                *weighting_mode_args,
+                *alpha_args,
                 *batch_size_arg,
                 *debug_flag, *args.overrides,
             )
 
-            # ══ Phase 2d: Debate-Weighted DPO on D_l → π_Final ════════════
+            # Resolve Phase 2d data: D_l-only (legacy) or ACE D_weak asymmetric
+            phase2_labels = resolve_phase2_train_labels(
+                cfg, d_high_path, d_low_scored_path, label_base_dir,
+                debug=bool(args.debug),
+            )
+
+            # ══ Phase 2d: Debate-Weighted / ACE Coverage DPO → π_Final ════
+            _p2_mode = str(cfg.get("phase2_training", {}).get("phase2_data_mode", "d_low"))
             logger.info("═" * 60)
-            logger.info("PHASE 2d: MWDPO_BC_2PHASE — Debate-Weighted DPO on D_l → π_Final")
+            logger.info(
+                f"PHASE 2d: MWDPO_BC_2PHASE — Weighted DPO "
+                f"(phase2_data_mode={_p2_mode}) → π_Final"
+            )
+            logger.info(f"  Phase2 labels: {phase2_labels}")
             logger.info("═" * 60)
             phase2_extra = [
                 "--sft_model_path",   sft_model_path,
                 "--phase1_model_path", phase1_output_dir,
-                "--pseudo_labels",    d_low_scored_path,
+                "--pseudo_labels",    phase2_labels,
             ]
             if args.resume_dpo_checkpoint:
                 phase2_extra += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
