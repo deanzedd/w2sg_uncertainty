@@ -124,19 +124,35 @@ training:
 strong_confidence:
   # Path where D_l with C_strong scores is saved
   d_low_scored_path: outputs/mwdpo_bc_2phase_boots_threshold/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels/d_low_scored/pseudo_labeled.jsonl
-  # allow_negative: if true, confidence_weight = raw C_strong ∈ [-1,1]
-  #                 if false (default), confidence_weight = max(C_strong, 0.0)
-  allow_negative: true
+
+  # Weighting mode for confidence_weight used in Phase 2d training:
+  #   strong_only       : max(C_strong, 0)                     [only strong signal]
+  #   strong_raw        : C_strong ∈ [-1,1]                    [allow negative, legacy allow_negative=true]
+  #   linear_combined   : α·C_weak_norm + (1-α)·max(C_strong,0)  [from proposal — RECOMMENDED]
+  #   multiplicative    : C_weak_norm · max(C_strong,0)         [conservative, both must agree]
+  #   strong_gated_weak : C_weak_norm if C_strong>0 else 0      [strong as binary gate]
+  # C_weak_norm = 2·(C_weak - 0.5) rescales [0.5,1]→[0,1] to match C_strong scale.
+  weighting_mode: linear_combined
+
+  # α for linear_combined: weight of C_weak vs C_strong
+  # α=0.3 → 30% weak + 70% strong (trust strong model more on residual D_l)
+  # α=0.0 → pure strong_only, α=1.0 → pure weak
+  alpha: 0.3
+
   batch_size: 4  # Smaller batch for 7B model
 
-# ── Phase 2d: 🆕 Debate-Weighted DPO on D_l ──────────────────────────────────
+# ── Phase 2d: Debate-Weighted DPO on D_l only (legacy residual Phase 2) ───────
 # Conservative hyperparameters for noisy D_l:
 #   - LR:   2e-6  (2.5× lower than Phase 1 5e-6)
 #   - β:    0.7   (stronger KL penalty for noisy data)
 #   - epochs: 2   (prevent overfitting to noisy labels)
 #   - max_grad_norm: 0.5  (tight clipping)
+# phase2_data_mode:
+#   d_low              — Phase B trains on scored D_l only (THIS config / legacy)
+#   d_weak_asymmetric  — ACE: D_h (w=1) ∪ scored D_l (see mwdpo_bc_ace_hh_rlhf.yaml)
 phase2_training:
   output_dir: outputs/mwdpo_bc_2phase_boots_threshold/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase2
+  phase2_data_mode: d_low
   num_train_epochs: 5
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 2

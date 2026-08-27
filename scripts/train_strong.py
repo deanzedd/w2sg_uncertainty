@@ -47,6 +47,7 @@ Usage:
 
 import argparse
 import logging
+import math
 import os
 import sys
 
@@ -102,8 +103,11 @@ def main():
 
     if args.debug:
         cfg.use_wandb = False
-        if args.max_steps:
-            cfg.training.max_steps = args.max_steps
+        # Cheap smoke defaults for Phase A / Phase B trainers.
+        _dbg_steps = args.max_steps if args.max_steps is not None else 10
+        cfg.training.max_steps = _dbg_steps
+        if cfg.get("phase2_training") is not None:
+            cfg.phase2_training.max_steps = _dbg_steps
 
     setup_logging(cfg)
     print_config(cfg)
@@ -374,12 +378,32 @@ def _train_mwdpo_phase2(
             "Pass the Phase 1 DPO checkpoint directory."
         )
 
-    # ── Load D_l with C_strong confidence weights ────────────────────────────
-    logger.info(f"[Phase 2] Loading D_l (scored) from: {d_low_scored_path}")
+    # ── Load Phase 2 training jsonl (D_l scored, or ACE D_weak asymmetric) ──
+    logger.info(f"[Phase 2] Loading Phase 2 labels from: {d_low_scored_path}")
     pseudo_labeled = BaseWeakLabeler.load(d_low_scored_path)
-    logger.info(f"[Phase 2] D_l size: {len(pseudo_labeled)}")
+    logger.info(f"[Phase 2] Dataset size: {len(pseudo_labeled)}")
 
-    conf_weights = [s.get("confidence_weight", 0.0) for s in pseudo_labeled]
+    # Fail fast: every sample must have a finite confidence_weight
+    missing_w = [i for i, s in enumerate(pseudo_labeled) if "confidence_weight" not in s]
+    if missing_w:
+        raise ValueError(
+            f"[Phase 2] {len(missing_w)} samples missing confidence_weight "
+            f"(first idx={missing_w[0]}) in {d_low_scored_path}"
+        )
+    conf_weights = []
+    for i, s in enumerate(pseudo_labeled):
+        try:
+            w = float(s["confidence_weight"])
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"[Phase 2] Non-numeric confidence_weight at idx={i}: {e}"
+            ) from e
+        if not math.isfinite(w):
+            raise ValueError(
+                f"[Phase 2] Non-finite confidence_weight at idx={i}: {w}"
+            )
+        conf_weights.append(w)
+
     strong_confs = [s.get("strong_confidence", None) for s in pseudo_labeled]
     n_nonzero    = sum(1 for w in conf_weights if w > 0)
     allow_neg    = any(w < 0 for w in conf_weights)
@@ -390,6 +414,50 @@ def _train_mwdpo_phase2(
         f"non-zero (contributing to training): {n_nonzero}/{len(conf_weights)} "
         f"({100*n_nonzero/len(conf_weights):.1f}%)"
     )
+
+    # Asymmetric ACE split logging / invariants via in_d_high
+    n_high = sum(1 for s in pseudo_labeled if s.get("in_d_high", False))
+    n_low = len(pseudo_labeled) - n_high
+    phase2_data_mode = str(
+        cfg.get("phase2_training", {}).get("phase2_data_mode", "d_low")
+    )
+    if n_high > 0:
+        w_high = [
+            float(s["confidence_weight"])
+            for s in pseudo_labeled if s.get("in_d_high", False)
+        ]
+        w_low = [
+            float(s["confidence_weight"])
+            for s in pseudo_labeled if not s.get("in_d_high", False)
+        ]
+        mean_high = sum(w_high) / len(w_high) if w_high else float("nan")
+        mean_low = sum(w_low) / len(w_low) if w_low else float("nan")
+        logger.info(
+            f"[Phase 2] in_d_high split — n_high={n_high}, n_low={n_low}, "
+            f"mean(w|high)={mean_high:.6f}, mean(w|low)={mean_low:.6f}"
+        )
+        if phase2_data_mode == "d_weak_asymmetric":
+            bad = [
+                i for i, s in enumerate(pseudo_labeled)
+                if s.get("in_d_high", False)
+                and abs(float(s["confidence_weight"]) - 1.0) > 1e-6
+            ]
+            if bad:
+                raise ValueError(
+                    f"[Phase 2] phase2_data_mode=d_weak_asymmetric requires "
+                    f"confidence_weight==1.0 on all in_d_high samples; "
+                    f"found {len(bad)} violations (first idx={bad[0]})."
+                )
+            logger.info(
+                "[Phase 2] ACE asymmetric invariant OK: all in_d_high have w=1.0"
+            )
+    elif phase2_data_mode == "d_weak_asymmetric":
+        raise ValueError(
+            "[Phase 2] phase2_data_mode=d_weak_asymmetric but no in_d_high=True "
+            f"samples in {d_low_scored_path}. Re-run ACE merge "
+            "(build_phase2_train_jsonl / pipeline Phase 2c→resolve)."
+        )
+
     if strong_confs[0] is not None:
         sc_vals = [v for v in strong_confs if v is not None]
         logger.info(
@@ -542,6 +610,7 @@ def _build_phase2_training_args(cfg) -> "DPOConfig":
             ),
         ),
         num_train_epochs=p2_cfg.get("num_train_epochs", 2),
+        max_steps=int(p2_cfg["max_steps"]) if p2_cfg.get("max_steps", None) is not None else -1,
         per_device_train_batch_size=p2_cfg.get("per_device_train_batch_size", 4),
         per_device_eval_batch_size=p2_cfg.get("per_device_eval_batch_size", 4),
         gradient_accumulation_steps=p2_cfg.get("gradient_accumulation_steps", 4),
