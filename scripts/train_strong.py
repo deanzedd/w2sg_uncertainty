@@ -275,11 +275,12 @@ def _train_cwpo(cfg, wrapper, ref_model, pseudo_labels_path: str,
 def _train_mwdpo(cfg, wrapper, ref_model, pseudo_labels_path: str,
                  resume_from_checkpoint: str = None):
     """
-    Phase 1 MWDPO: Standard DPO on D_h (high-agreement subset).
+    Phase 1 MWDPO: Standard DPO on Phase-1 train labels.
 
-    D_h = high-agreement pseudo-labeled data from Phase 1b (label_multi_weak.py).
-    The path should point to the D_h pseudo_labeled.jsonl file.
-    Reference model = π_θ^SFT (frozen copy of the SFT-on-D_h checkpoint).
+    Path comes from pipeline phase1_data_mode:
+      d_high         → agreement-filtered subset
+      all_unlabeled  → full D_u with multi-weak ensemble preferences
+    Reference model = π_θ^SFT (frozen copy of the matching SFT checkpoint).
 
     Note: Phase 1 uses STANDARD DPO (not confidence-weighted). The
     confidence_weight field in the data is stored but not used here.
@@ -288,25 +289,26 @@ def _train_mwdpo(cfg, wrapper, ref_model, pseudo_labels_path: str,
     if not pseudo_labels_path:
         raise ValueError(
             "--pseudo_labels is required for MWDPO training. "
-            "Pass the D_h pseudo_labeled.jsonl path from label_multi_weak.py."
+            "Pass Phase-1 labels from label_multi_weak.py / label_bootstrap_calibration.py "
+            "(d_high/ or combined pseudo_labeled.jsonl)."
         )
 
-    logger.info(f"[MWDPO Phase 1] Loading D_h from: {pseudo_labels_path}")
+    logger.info(f"[MWDPO Phase 1] Loading Phase-1 train labels from: {pseudo_labels_path}")
     pseudo_labeled = BaseWeakLabeler.load(pseudo_labels_path)
-    logger.info(f"D_h size: {len(pseudo_labeled)}")
+    logger.info(f"Phase-1 train size: {len(pseudo_labeled)}")
 
-    # Log D_h statistics
+    # Log label-set statistics (in_d_high useful when loading combined D_u)
     conf_weights = [s.get("confidence_weight", 1.0) for s in pseudo_labeled]
     in_d_high = sum(1 for s in pseudo_labeled if s.get("in_d_high", True))
     logger.info(
-        f"[MWDPO Phase 1] D_h stats — "
+        f"[MWDPO Phase 1] label stats — "
         f"min_conf: {min(conf_weights):.4f}, "
         f"max_conf: {max(conf_weights):.4f}, "
         f"mean_conf: {sum(conf_weights)/len(conf_weights):.4f}, "
         f"in_d_high: {in_d_high}/{len(pseudo_labeled)}"
     )
 
-    # Standard DPO on D_h — reuses WDPOTrainer (identical to standard DPO)
+    # Standard DPO — reuses WDPOTrainer (identical to standard DPO)
     train_dataset = WDPODataset(
         pseudo_labeled, wrapper.tokenizer,
         max_length=cfg.get("max_length", 512),

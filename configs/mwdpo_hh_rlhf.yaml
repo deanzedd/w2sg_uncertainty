@@ -62,6 +62,10 @@ multi_weak_label_output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
 # Legacy field kept for pipeline compatibility (used only if pseudo_labels arg not given)
 weak_label_output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
 
+# Phase-1 SFT + DPO data: d_high | all_unlabeled (ensemble prefs already in combined jsonl).
+# Ablation all_unlabeled → also change sft/training/eval output_dir below.
+phase1_data_mode: d_high
+
 # ── Reward Model Training (Bradley-Terry, same as CWPO) ────────────────────
 # Each of the k models is trained with these HPs but a different seed.
 reward_model:

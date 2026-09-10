@@ -180,6 +180,43 @@ def run_script(script_name: str, *extra_args):
     return result.returncode
 
 
+def resolve_phase1_train_labels(
+    cfg,
+    label_base_dir: str,
+    cli_pseudo_labels: str | None = None,
+) -> str:
+    """
+    Resolve Phase-1 SFT + DPO --pseudo_labels path from phase1_data_mode.
+
+    Priority:
+      1. CLI --pseudo_labels (explicit override)
+      2. phase1_data_mode=d_high         → {label_base}/d_high/pseudo_labeled.jsonl
+      3. phase1_data_mode=all_unlabeled  → {label_base}/pseudo_labeled.jsonl
+         (full D_u with multi-weak ensemble preferences; already written at labeling time)
+
+    Both SFT and Phase-1 DPO must use the same resolved path.
+    """
+    if cli_pseudo_labels:
+        logger.info(
+            f"[phase1_data_mode] Using CLI --pseudo_labels override: {cli_pseudo_labels}"
+        )
+        return cli_pseudo_labels
+
+    mode = str(cfg.get("phase1_data_mode", "d_high"))
+    if mode == "d_high":
+        path = os.path.join(label_base_dir, "d_high", "pseudo_labeled.jsonl")
+    elif mode == "all_unlabeled":
+        path = os.path.join(label_base_dir, "pseudo_labeled.jsonl")
+    else:
+        raise ValueError(
+            f"Unknown phase1_data_mode={mode!r}. "
+            "Choose 'd_high' or 'all_unlabeled'."
+        )
+
+    logger.info(f"[phase1_data_mode={mode}] Phase-1 SFT/DPO labels: {path}")
+    return path
+
+
 def resolve_phase2_train_labels(
     cfg,
     d_high_path: str,
@@ -487,9 +524,9 @@ def main():
         label_base_dir = cfg.get("multi_weak_label_output_dir",
                                   cfg.get("weak_label_output_dir", "outputs/mwdpo/weak_labels"))
 
-        # D_h is the high-agreement labeled subset used for SFT + DPO Phase 1
-        d_high_path = args.pseudo_labels or os.path.join(
-            label_base_dir, "d_high", "pseudo_labeled.jsonl"
+        # Phase-1 SFT + DPO train labels (d_high | all_unlabeled)
+        phase1_labels_path = resolve_phase1_train_labels(
+            cfg, label_base_dir, args.pseudo_labels
         )
 
         # ══ Phase 1a: Train k Reward Models on D_l ══════════════════════
@@ -513,35 +550,41 @@ def main():
                        *debug_flag, *args.overrides)
         else:
             if args.pseudo_labels:
-                logger.info(f"Using pre-computed D_h: {args.pseudo_labels}")
+                logger.info(f"Using pre-computed Phase-1 labels: {args.pseudo_labels}")
             elif args.skip_labeling:
                 logger.info("Skipping multi-weak labeling (--skip_labeling)")
 
-        # ══ Phase 2a: SFT Strong Model on D_h ═══════════════════════════
+        # ══ Phase 2a: SFT Strong Model on phase1_data_mode labels ═══════
         if not args.skip_sft:
             logger.info("═" * 60)
-            logger.info("PHASE 2a: MWDPO — SFT Strong Model on D_h → π_θ^SFT")
+            logger.info(
+                f"PHASE 2a: MWDPO — SFT Strong Model "
+                f"(phase1_data_mode={cfg.get('phase1_data_mode', 'd_high')}) → π_θ^SFT"
+            )
             logger.info("═" * 60)
             sft_resume_args = (["--resume_sft_checkpoint", args.resume_sft_checkpoint]
                                if args.resume_sft_checkpoint else [])
             run_script(
                 "train_sft.py",
                 "--config", args.config,
-                "--pseudo_labels", d_high_path,
+                "--pseudo_labels", phase1_labels_path,
                 *sft_resume_args,
                 *debug_flag,
                 *args.overrides,
             )
         else:
-            logger.info("Skipping SFT on D_h (--skip_sft)")
+            logger.info("Skipping SFT (--skip_sft)")
 
-        # ══ Phase 2b: Standard DPO on D_h (Phase 1 of proposal) ════════
+        # ══ Phase 2b: Standard DPO on phase1_data_mode labels ══════════
         logger.info("═" * 60)
-        logger.info("PHASE 2b: MWDPO Phase 1 — Standard DPO on D_h")
+        logger.info(
+            f"PHASE 2b: MWDPO Phase 1 — Standard DPO "
+            f"(phase1_data_mode={cfg.get('phase1_data_mode', 'd_high')})"
+        )
         logger.info("═" * 60)
         extra_args = [
             "--sft_model_path", sft_model_path,
-            "--pseudo_labels", d_high_path,
+            "--pseudo_labels", phase1_labels_path,
         ]
         if args.resume_dpo_checkpoint:
             extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
@@ -558,8 +601,8 @@ def main():
         ]
         if args.run_gpt4:
             eval_args.append("--run_gpt4")
-        if os.path.exists(d_high_path):
-            eval_args += ["--pseudo_labels", d_high_path]
+        if os.path.exists(phase1_labels_path):
+            eval_args += ["--pseudo_labels", phase1_labels_path]
         run_script("evaluate.py", "--config", args.config, *eval_args, *args.overrides)
 
         logger.info("═" * 60)
@@ -585,9 +628,9 @@ def main():
                     "outputs/mwdpo_bootstrap_calibration/weak_labels"),
         )
 
-        # D_h is the high-agreement subset used for SFT + DPO
-        d_high_path = args.pseudo_labels or os.path.join(
-            label_base_dir, "d_high", "pseudo_labeled.jsonl"
+        # Phase-1 SFT + DPO train labels (d_high | all_unlabeled)
+        phase1_labels_path = resolve_phase1_train_labels(
+            cfg, label_base_dir, args.pseudo_labels
         )
 
         # ══ Phase 1a: Train MultiHeadRewardModel on D_l ══════════════════
@@ -633,14 +676,17 @@ def main():
             )
         else:
             if args.pseudo_labels:
-                logger.info(f"Using pre-computed D_h: {args.pseudo_labels}")
+                logger.info(f"Using pre-computed Phase-1 labels: {args.pseudo_labels}")
             elif args.skip_labeling:
                 logger.info("Skipping labeling (--skip_labeling)")
 
-        # ══ Phase 2a: SFT Strong Model on D_h (UNCHANGED from MWDPO) ══════
+        # ══ Phase 2a: SFT Strong Model on phase1_data_mode labels ════════
         if not args.skip_sft:
             logger.info("═" * 60)
-            logger.info("PHASE 2a: MWDPO_BC — SFT Strong Model on D_h → π_θ^SFT")
+            logger.info(
+                f"PHASE 2a: MWDPO_BC — SFT Strong Model "
+                f"(phase1_data_mode={cfg.get('phase1_data_mode', 'd_high')}) → π_θ^SFT"
+            )
             logger.info("═" * 60)
             sft_resume_args = (
                 ["--resume_sft_checkpoint", args.resume_sft_checkpoint]
@@ -649,19 +695,22 @@ def main():
             run_script(
                 "train_sft.py",
                 "--config", args.config,
-                "--pseudo_labels", d_high_path,
+                "--pseudo_labels", phase1_labels_path,
                 *sft_resume_args, *debug_flag, *args.overrides,
             )
         else:
-            logger.info("Skipping SFT on D_h (--skip_sft)")
+            logger.info("Skipping SFT (--skip_sft)")
 
-        # ══ Phase 2b: Standard DPO on D_h (UNCHANGED from MWDPO) ═══════════
+        # ══ Phase 2b: Standard DPO on phase1_data_mode labels ═════════════
         logger.info("═" * 60)
-        logger.info("PHASE 2b: MWDPO_BC — Standard DPO on D_h")
+        logger.info(
+            f"PHASE 2b: MWDPO_BC — Standard DPO "
+            f"(phase1_data_mode={cfg.get('phase1_data_mode', 'd_high')})"
+        )
         logger.info("═" * 60)
         extra_args = [
             "--sft_model_path", sft_model_path,
-            "--pseudo_labels", d_high_path,
+            "--pseudo_labels", phase1_labels_path,
         ]
         if args.resume_dpo_checkpoint:
             extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
@@ -681,8 +730,8 @@ def main():
         ]
         if args.run_gpt4:
             eval_args.append("--run_gpt4")
-        if os.path.exists(d_high_path):
-            eval_args += ["--pseudo_labels", d_high_path]
+        if os.path.exists(phase1_labels_path):
+            eval_args += ["--pseudo_labels", phase1_labels_path]
         run_script("evaluate.py", "--config", args.config, *eval_args, *args.overrides)
 
         logger.info("═" * 60)
@@ -703,8 +752,8 @@ def main():
             "multi_weak_label_output_dir",
             cfg.get("weak_label_output_dir", f"outputs/super_multi_dpo/weak_labels"),
         )
-        d_high_path = args.pseudo_labels or os.path.join(
-            label_base_dir, "d_high", "pseudo_labeled.jsonl"
+        phase1_labels_path = resolve_phase1_train_labels(
+            cfg, label_base_dir, args.pseudo_labels
         )
 
         # ══ Phase 1a+b: Train Super Multi Reward Model (Phase 1 warmup + Phase 2 LoRA ensemble)
@@ -735,14 +784,17 @@ def main():
             )
         else:
             if args.pseudo_labels:
-                logger.info(f"Using pre-computed D_h: {args.pseudo_labels}")
+                logger.info(f"Using pre-computed Phase-1 labels: {args.pseudo_labels}")
             elif args.skip_labeling:
                 logger.info("Skipping labeling (--skip_labeling)")
 
-        # ══ Phase 2a: SFT Strong Model on D_h (IDENTICAL to MWDPO) ══════════════
+        # ══ Phase 2a: SFT Strong Model on phase1_data_mode labels ══════════════
         if not args.skip_sft:
             logger.info("═" * 60)
-            logger.info("PHASE 2a: Super_multi_dpo — SFT Strong Model on D_h")
+            logger.info(
+                f"PHASE 2a: Super_multi_dpo — SFT Strong Model "
+                f"(phase1_data_mode={cfg.get('phase1_data_mode', 'd_high')})"
+            )
             logger.info("═" * 60)
             sft_resume_args = (
                 ["--resume_sft_checkpoint", args.resume_sft_checkpoint]
@@ -751,19 +803,22 @@ def main():
             run_script(
                 "train_sft.py",
                 "--config", args.config,
-                "--pseudo_labels", d_high_path,
+                "--pseudo_labels", phase1_labels_path,
                 *sft_resume_args, *debug_flag, *args.overrides,
             )
         else:
-            logger.info("Skipping SFT on D_h (--skip_sft)")
+            logger.info("Skipping SFT (--skip_sft)")
 
-        # ══ Phase 2b: Standard DPO on D_h (IDENTICAL to MWDPO) ═══════════════
+        # ══ Phase 2b: Standard DPO on phase1_data_mode labels ═══════════════
         logger.info("═" * 60)
-        logger.info("PHASE 2b: Super_multi_dpo — Standard DPO on D_h")
+        logger.info(
+            f"PHASE 2b: Super_multi_dpo — Standard DPO "
+            f"(phase1_data_mode={cfg.get('phase1_data_mode', 'd_high')})"
+        )
         logger.info("═" * 60)
         extra_args = [
             "--sft_model_path", sft_model_path,
-            "--pseudo_labels", d_high_path,
+            "--pseudo_labels", phase1_labels_path,
         ]
         if args.resume_dpo_checkpoint:
             extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
@@ -783,8 +838,8 @@ def main():
         ]
         if args.run_gpt4:
             eval_args.append("--run_gpt4")
-        if os.path.exists(d_high_path):
-            eval_args += ["--pseudo_labels", d_high_path]
+        if os.path.exists(phase1_labels_path):
+            eval_args += ["--pseudo_labels", phase1_labels_path]
         run_script("evaluate.py", "--config", args.config, *eval_args, *args.overrides)
 
         logger.info("═" * 60)
@@ -799,8 +854,11 @@ def main():
         label_base_dir = cfg.get("multi_weak_label_output_dir",
                                   cfg.get("weak_label_output_dir", "outputs/mwdpo_2phase/weak_labels"))
 
-        d_high_path = args.pseudo_labels or os.path.join(
-            label_base_dir, "d_high", "pseudo_labeled.jsonl"
+        # Canonical D_h for Phase-2 ACE merge (never replaced by all_unlabeled)
+        d_high_path = os.path.join(label_base_dir, "d_high", "pseudo_labeled.jsonl")
+        # Phase-1 SFT + DPO train labels (d_high | all_unlabeled)
+        phase1_labels_path = resolve_phase1_train_labels(
+            cfg, label_base_dir, args.pseudo_labels
         )
         d_low_path = os.path.join(label_base_dir, "d_low", "pseudo_labeled.jsonl")
 
@@ -841,36 +899,42 @@ def main():
                        *debug_flag, *args.overrides)
         else:
             if args.pseudo_labels:
-                logger.info(f"Using pre-computed D_h: {args.pseudo_labels}")
+                logger.info(f"Using pre-computed Phase-1 labels: {args.pseudo_labels}")
             elif args.skip_labeling:
                 logger.info("Skipping labeling (--skip_labeling)")
 
-        # ══ Phase 2a: SFT Strong Model on D_h ══════════════════════════════
+        # ══ Phase 2a: SFT Strong Model on phase1_data_mode labels ══════════
         if not args.skip_sft:
             logger.info("═" * 60)
-            logger.info("PHASE 2a: MWDPO_2PHASE — SFT Strong Model on D_h → π_SFT")
+            logger.info(
+                f"PHASE 2a: MWDPO_2PHASE — SFT Strong Model "
+                f"(phase1_data_mode={cfg.get('phase1_data_mode', 'd_high')}) → π_SFT"
+            )
             logger.info("═" * 60)
             sft_resume_args = (["--resume_sft_checkpoint", args.resume_sft_checkpoint]
                                if args.resume_sft_checkpoint else [])
             run_script("train_sft.py", "--config", args.config,
-                       "--pseudo_labels", d_high_path,
+                       "--pseudo_labels", phase1_labels_path,
                        *sft_resume_args, *debug_flag, *args.overrides)
         else:
-            logger.info("Skipping SFT on D_h (--skip_sft)")
+            logger.info("Skipping SFT (--skip_sft)")
 
-        # ══ Phase 2b: Standard DPO on D_h → π_Phase1 ══════════════════════
+        # ══ Phase 2b: Standard DPO on phase1_data_mode labels → π_Phase1 ══
         if not getattr(args, "skip_phase1_dpo", False):
             logger.info("═" * 60)
-            logger.info("PHASE 2b: MWDPO_2PHASE — Standard DPO on D_h → π_Phase1")
+            logger.info(
+                f"PHASE 2b: MWDPO_2PHASE — Standard DPO "
+                f"(phase1_data_mode={cfg.get('phase1_data_mode', 'd_high')}) → π_Phase1"
+            )
             logger.info("═" * 60)
             extra_args = ["--sft_model_path", sft_model_path,
-                          "--pseudo_labels", d_high_path]
+                          "--pseudo_labels", phase1_labels_path]
             if args.resume_dpo_checkpoint:
                 extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
             run_script("train_strong.py", "--config", args.config,
                        *extra_args, *debug_flag, *args.overrides)
         else:
-            logger.info("Skipping Phase 1 DPO on D_h (--skip_phase1_dpo)")
+            logger.info("Skipping Phase 1 DPO (--skip_phase1_dpo)")
 
         # ══ Phase 2c: Pre-compute C_strong for D_l ═════════════════════════
         if not getattr(args, "skip_phase2", False):
@@ -942,8 +1006,8 @@ def main():
         ]
         if args.run_gpt4:
             eval_args.append("--run_gpt4")
-        if os.path.exists(d_high_path):
-            eval_args += ["--pseudo_labels", d_high_path]
+        if os.path.exists(phase1_labels_path):
+            eval_args += ["--pseudo_labels", phase1_labels_path]
         run_script("evaluate.py", "--config", args.config, *eval_args, *args.overrides)
 
         logger.info("═" * 60)
@@ -967,8 +1031,11 @@ def main():
             cfg.get("weak_label_output_dir", "outputs/mwdpo_bc_2phase/weak_labels"),
         )
 
-        d_high_path = args.pseudo_labels or os.path.join(
-            label_base_dir, "d_high", "pseudo_labeled.jsonl"
+        # Canonical D_h for Phase-2 ACE merge (never replaced by all_unlabeled)
+        d_high_path = os.path.join(label_base_dir, "d_high", "pseudo_labeled.jsonl")
+        # Phase-1 SFT + DPO train labels (d_high | all_unlabeled)
+        phase1_labels_path = resolve_phase1_train_labels(
+            cfg, label_base_dir, args.pseudo_labels
         )
         d_low_path = os.path.join(label_base_dir, "d_low", "pseudo_labeled.jsonl")
 
@@ -1026,38 +1093,44 @@ def main():
                        *extra, *debug_flag, *args.overrides)
         else:
             if args.pseudo_labels:
-                logger.info(f"Using pre-computed D_h: {args.pseudo_labels}")
+                logger.info(f"Using pre-computed Phase-1 labels: {args.pseudo_labels}")
             elif args.skip_labeling:
                 logger.info("Skipping labeling (--skip_labeling)")
 
-        # ══ Phase 2a: SFT Strong Model on D_h ══════════════════════════════
+        # ══ Phase 2a: SFT Strong Model on phase1_data_mode labels ══════════
         if not args.skip_sft:
             logger.info("═" * 60)
-            logger.info("PHASE 2a: MWDPO_BC_2PHASE — SFT Strong Model on D_h → π_SFT")
+            logger.info(
+                f"PHASE 2a: MWDPO_BC_2PHASE — SFT Strong Model "
+                f"(phase1_data_mode={cfg.get('phase1_data_mode', 'd_high')}) → π_SFT"
+            )
             logger.info("═" * 60)
             sft_resume_args = (
                 ["--resume_sft_checkpoint", args.resume_sft_checkpoint]
                 if args.resume_sft_checkpoint else []
             )
             run_script("train_sft.py", "--config", args.config,
-                       "--pseudo_labels", d_high_path,
+                       "--pseudo_labels", phase1_labels_path,
                        *sft_resume_args, *debug_flag, *args.overrides)
         else:
-            logger.info("Skipping SFT on D_h (--skip_sft)")
+            logger.info("Skipping SFT (--skip_sft)")
 
-        # ══ Phase 2b: Standard DPO on D_h → π_Phase1 ══════════════════════
+        # ══ Phase 2b: Standard DPO on phase1_data_mode labels → π_Phase1 ══
         if not getattr(args, "skip_phase1_dpo", False):
             logger.info("═" * 60)
-            logger.info("PHASE 2b: MWDPO_BC_2PHASE — Standard DPO on D_h → π_Phase1")
+            logger.info(
+                f"PHASE 2b: MWDPO_BC_2PHASE — Standard DPO "
+                f"(phase1_data_mode={cfg.get('phase1_data_mode', 'd_high')}) → π_Phase1"
+            )
             logger.info("═" * 60)
             extra_args = ["--sft_model_path", sft_model_path,
-                          "--pseudo_labels", d_high_path]
+                          "--pseudo_labels", phase1_labels_path]
             if args.resume_dpo_checkpoint:
                 extra_args += ["--resume_dpo_checkpoint", args.resume_dpo_checkpoint]
             run_script("train_strong.py", "--config", args.config,
                        *extra_args, *debug_flag, *args.overrides)
         else:
-            logger.info("Skipping Phase 1 DPO on D_h (--skip_phase1_dpo)")
+            logger.info("Skipping Phase 1 DPO (--skip_phase1_dpo)")
 
         # ══ Phase 2c: Pre-compute C_strong for D_l ═════════════════════════
         if not getattr(args, "skip_phase2", False):
@@ -1129,8 +1202,8 @@ def main():
         ]
         if args.run_gpt4:
             eval_args.append("--run_gpt4")
-        if os.path.exists(d_high_path):
-            eval_args += ["--pseudo_labels", d_high_path]
+        if os.path.exists(phase1_labels_path):
+            eval_args += ["--pseudo_labels", phase1_labels_path]
         run_script("evaluate.py", "--config", args.config, *eval_args, *args.overrides)
 
         logger.info("═" * 60)

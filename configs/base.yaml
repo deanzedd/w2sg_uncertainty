@@ -49,6 +49,15 @@ gradient_checkpointing: false           # override per section (sft / training) 
 dataset_name: hh_rlhf                   # "hh_rlhf" or "tldr"
 labeled_ratio: 0.3                      # fraction of dataset used as D_l (labeled)
                                         # remaining (1 - labeled_ratio) becomes D_u (unlabeled)
+
+# ── Phase-1 SFT + DPO data source (MWDPO / MWDPO_BC / super_multi / 2phase) ──
+# Controls BOTH strong SFT and Phase-1 standard DPO (same path for both):
+#   d_high         — agreement-filtered subset only
+#   all_unlabeled  — full D_u with multi-weak ensemble preferences
+#                     ({label_base}/pseudo_labeled.jsonl = D_h ∪ D_l)
+# When ablating all_unlabeled, change sft/training/eval output_dir (+ wandb_run_name)
+# so you do not overwrite the d_high run. CLI --pseudo_labels still overrides.
+phase1_data_mode: d_high
 max_length: 512                         # max token length per sample
 max_prompt_length: 256                  # max prompt length
 

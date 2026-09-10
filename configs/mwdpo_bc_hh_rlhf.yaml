@@ -97,6 +97,10 @@ bootstrap_calibration:
 multi_weak_label_output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels
 weak_label_output_dir:       outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels
 
+# Phase-1 SFT + DPO data: d_high | all_unlabeled (ensemble prefs already in combined jsonl).
+# Ablation all_unlabeled → also change sft/training/eval output_dir below.
+phase1_data_mode: d_high
+
 # ── Reward Model Training HPs (same as MWDPO, read by MultiHeadRewardTrainer) ─
 reward_model:
   num_train_epochs: 5
