@@ -91,15 +91,15 @@ bootstrap_calibration:
   confidence_threshold: 0.8
 
   # Output dir for the Phase 2 multi-head checkpoint
-  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-1.5B/seed42/reward_model
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/reward_model
 
 # ── D_h and D_l output dirs (same convention as MWDPO) ───────────────────────
-multi_weak_label_output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels
-weak_label_output_dir:       outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels
+multi_weak_label_output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
+weak_label_output_dir:       outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
 
 # Phase-1 SFT + DPO data: d_high | all_unlabeled (ensemble prefs already in combined jsonl).
 # Ablation all_unlabeled → also change sft/training/eval output_dir below.
-phase1_data_mode: d_high
+phase1_data_mode: all_unlabeled
 
 # ── Reward Model Training HPs (same as MWDPO, read by MultiHeadRewardTrainer) ─
 reward_model:
@@ -113,11 +113,11 @@ reward_model:
   fp16: false
   logging_steps: 50
   save_steps: 3000
-  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-1.5B/seed42/reward_model
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/reward_model
 
 # ── Strong Model SFT on D_h (UNCHANGED from MWDPO) ───────────────────────────
 sft:
-  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-1.5B/seed42/sft_strong
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/sft_strong
   num_train_epochs: 3
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 4
@@ -133,8 +133,8 @@ sft:
 
 # ── Phase 1: Standard DPO on D_h (UNCHANGED from MWDPO) ─────────────────────
 training:
-  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase1
-  num_train_epochs: 10
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/strong_model
+  num_train_epochs: 5
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 2
   gradient_accumulation_steps: 4
@@ -153,6 +153,6 @@ training:
   gradient_checkpointing: true
 
 eval:
-  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-1.5B/seed42/eval
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/Qwen2.5-7B/seed42/eval
 
-wandb_run_name: weaklabel_mwdpo_1phase_threshold0.8_linear_boots-hh_rlhf-qwen-0.5b-1.5b-phase1
+wandb_run_name: ABinh_mwdpo_1phase_threshold0.8_linear_boots-hh_rlhf-qwen-0.5b-7b-phase1

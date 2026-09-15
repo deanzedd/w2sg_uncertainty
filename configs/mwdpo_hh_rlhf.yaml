@@ -64,7 +64,7 @@ weak_label_output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
 
 # Phase-1 SFT + DPO data: d_high | all_unlabeled (ensemble prefs already in combined jsonl).
 # Ablation all_unlabeled → also change sft/training/eval output_dir below.
-phase1_data_mode: d_high
+phase1_data_mode: all_unlabeled
 
 # ── Reward Model Training (Bradley-Terry, same as CWPO) ────────────────────
 # Each of the k models is trained with these HPs but a different seed.
@@ -99,8 +99,8 @@ sft:
 # Standard DPO (NOT confidence-weighted) on the clean D_h subset.
 # This instills foundational preference recognition on high-agreement data.
 training:
-  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-7B/seed42/strong_model_phase1
-  num_train_epochs: 10
+  output_dir: outputs/mwdpo/hh_rlhf/Qwen2.5-7B/seed42/strong_model
+  num_train_epochs: 5
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 2
   gradient_accumulation_steps: 4        # effective batch = 16
