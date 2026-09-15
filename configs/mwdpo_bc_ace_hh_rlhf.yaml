@@ -100,7 +100,7 @@ sft:
 # When --skip_phase1_dpo, an existing Phase1 checkpoint under this path is reused.
 training:
   output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase1
-  num_train_epochs: 4
+  num_train_epochs: 3
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 2
   gradient_accumulation_steps: 4
@@ -120,21 +120,21 @@ training:
 
 # ── Phase 2c: C_strong + ACE union path ───────────────────────────────────────
 strong_confidence:
-  d_low_scored_path: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels/d_low_scored/pseudo_labeled.jsonl
+  d_low_scored_path: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels/d_low_scored/pseudo_labeled_0.7.jsonl
   # ACE union: D_h (w=1) ∪ scored D_l (C_combined)
-  d_weak_scored_path: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels/d_weak_scored/pseudo_labeled.jsonl
+  d_weak_scored_path: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/weak_labels/d_weak_scored/pseudo_labeled_0.7.jsonl
 
   weighting_mode: linear_combined
   # α=0.3 → 30% weak + 70% strong on residual D_l
-  alpha: 0.3
+  alpha: 0.7
   batch_size: 8
 
 # ── Phase 2d: ACE coverage — 1 epoch on D_weak asymmetric ────────────────────
 # Writes to ACE-specific output_dir (does not overwrite legacy phase2).
 phase2_training:
-  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase2
+  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase2_0.7
   phase2_data_mode: d_weak_asymmetric
-  num_train_epochs: 1
+  num_train_epochs: 2
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 2
   gradient_accumulation_steps: 4
@@ -153,6 +153,6 @@ phase2_training:
   gradient_checkpointing: true
 
 eval:
-  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/eval
+  output_dir: outputs/mwdpo_ace/hh_rlhf/Qwen2.5-1.5B/seed42/eval/0.7
 
 wandb_run_name: aTrung-mwdpo_bc_ace-hh_rlhf-qwen-0.5b-1.5B

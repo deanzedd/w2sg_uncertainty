@@ -40,7 +40,7 @@ lora_target_modules: null  # null = PEFT auto-detects (q_proj, v_proj, etc.)
 weak_model_sft:
   output_dir: outputs/wdpo/hh_rlhf/Qwen2.5-7B/seed42/weak_model_sft
   num_train_epochs: 5                   # paper Bảng 7: 5 epochs
-  per_device_train_batch_size: 16       # paper Bảng 7: 32 (OOM) → 16, grad_accum=8 eff=128
+  per_device_train_batch_size: 8       # paper Bảng 7: 32 (OOM) → 16, grad_accum=8 eff=128
   gradient_accumulation_steps: 8        # paper Bảng 7: grad_accum=8
   learning_rate: 1.0e-5                 # paper Bảng 7: 1e-5
   weight_decay: 0.0                     # paper Bảng 7: Adam (không có weight decay)
@@ -54,7 +54,7 @@ weak_model_sft:
 weak_model_dpo:
   output_dir: outputs/wdpo/hh_rlhf/Qwen2.5-7B/seed42/weak_model_dpo
   num_train_epochs: 5                   # paper Bảng 7: 5 epochs
-  per_device_train_batch_size: 16       # paper Bảng 7: 32 (OOM) → 16
+  per_device_train_batch_size: 8       # paper Bảng 7: 32 (OOM) → 16
   gradient_accumulation_steps: 8        # paper Bảng 7: grad_accum=8
   learning_rate: 1.0e-5                 # paper Bảng 7: 1e-5
   weight_decay: 0.0                     # paper Bảng 7: Adam (không có weight decay)
@@ -100,4 +100,4 @@ eval:
 
 weak_label_output_dir: outputs/wdpo/hh_rlhf/Qwen2.5-7B/seed42/weak_labels
 
-wandb_run_name: aBinh-wdpo-hh_rlhf-qwen-0.5b-7b
+wandb_run_name: aTrung-wdpo-hh_rlhf-qwen-0.5b-7b
