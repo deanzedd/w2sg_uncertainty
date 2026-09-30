@@ -16,7 +16,7 @@ weak_model_name: facebook/opt-125m
 # Qwen2.5-0.5B alternative:
 # weak_model_name: Qwen/Qwen2.5-0.5B
 
-strong_model_name: facebook/opt-1.3b
+strong_model_name: facebook/opt-13b
 # Alternative strong models:
 #   facebook/opt-2.7b        → device_map: null (single GPU, ~5GB)
 #   facebook/opt-6.7b        → device_map: auto (multi-GPU)
