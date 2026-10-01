@@ -590,7 +590,7 @@ def _build_phase2_training_args(cfg) -> "DPOConfig":
     """
     import torch as _torch
     from trl import DPOConfig
-    from src.trainers.sft_trainer import _detect_precision
+    from src.trainers.sft_trainer import _detect_precision, warmup_kwargs
 
     # Prefer phase2_training section; fall back to training section with adjusted defaults
     p2_cfg = cfg.get("phase2_training", cfg.get("training", {}))
@@ -618,8 +618,7 @@ def _build_phase2_training_args(cfg) -> "DPOConfig":
         gradient_accumulation_steps=p2_cfg.get("gradient_accumulation_steps", 4),
         learning_rate=float(p2_cfg.get("learning_rate", 2e-6)),    # Conservative: 2e-6
         lr_scheduler_type=p2_cfg.get("lr_scheduler_type", "cosine"),
-        warmup_steps=p2_cfg.get("warmup_steps", 50),
-        warmup_ratio=0.0,   # always 0 when warmup_steps is set; avoids HF Trainer conflict
+        **warmup_kwargs(p2_cfg.get("warmup_steps", 50)),
         weight_decay=p2_cfg.get("weight_decay", 0.05),
         optim=p2_cfg.get("optim", "paged_adamw_32bit"),
         logging_steps=p2_cfg.get("logging_steps", 10),

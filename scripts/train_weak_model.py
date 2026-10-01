@@ -30,7 +30,7 @@ from trl import DPOConfig, DPOTrainer
 
 from src.data import get_dataset
 from src.models import get_model_wrapper
-from src.trainers.sft_trainer import build_sft_args, run_sft, _to_hf_dataset, _detect_precision
+from src.trainers.sft_trainer import build_sft_args, run_sft, _to_hf_dataset, _detect_precision, warmup_kwargs
 from src.utils import load_config, print_config, set_seed, setup_logging, init_wandb, finish_wandb
 
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ def _build_weak_dpo_config(cfg: DictConfig) -> DPOConfig:
         gradient_accumulation_steps=dpo_cfg.get("gradient_accumulation_steps", 4),
         learning_rate=float(dpo_cfg.get("learning_rate", 5e-5)),
         lr_scheduler_type=dpo_cfg.get("lr_scheduler_type", "cosine"),
-        warmup_ratio=dpo_cfg.get("warmup_ratio", 0.1),
+        **warmup_kwargs(warmup_ratio=dpo_cfg.get("warmup_ratio", 0.1)),
         weight_decay=dpo_cfg.get("weight_decay", 0.0),
         logging_steps=dpo_cfg.get("logging_steps", 10),
         save_steps=dpo_cfg.get("save_steps", 500),

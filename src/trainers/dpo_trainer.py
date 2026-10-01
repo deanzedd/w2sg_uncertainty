@@ -15,7 +15,7 @@ from omegaconf import DictConfig
 from trl import DPOConfig, DPOTrainer
 
 from .cwpo_trainer import SafeCheckpointMixin
-from .sft_trainer import _detect_precision
+from .sft_trainer import _detect_precision, warmup_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +106,7 @@ def build_baseline_dpo_args(cfg: DictConfig) -> DPOConfig:
         learning_rate=float(train_cfg.get("learning_rate", 5e-6)),  # 5e-6 per spec (Bảng 8)
         lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
         # warmup: prefer warmup_steps (100 per spec, Bảng 8); zero-out ratio to avoid conflict
-        warmup_steps=train_cfg.get("warmup_steps", 0),
-        warmup_ratio=0.0 if train_cfg.get("warmup_steps", 0) > 0 else train_cfg.get("warmup_ratio", 0.1),
+        **warmup_kwargs(train_cfg.get("warmup_steps", 0), train_cfg.get("warmup_ratio", 0.1)),
         weight_decay=train_cfg.get("weight_decay", 0.05),  # 0.05 per spec
         optim=train_cfg.get("optim", "paged_adamw_32bit"),  # paged adamw 32bit per spec
         logging_steps=train_cfg.get("logging_steps", 10),

@@ -10,6 +10,7 @@ Wraps TRL's SFTTrainer.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Optional, Tuple
 
@@ -17,7 +18,7 @@ import torch
 import datasets as hf_datasets
 from omegaconf import DictConfig
 from torch.utils.data import Dataset
-from transformers import PreTrainedModel, PreTrainedTokenizerBase
+from transformers import PreTrainedModel, PreTrainedTokenizerBase, TrainingArguments
 from trl import SFTConfig, SFTTrainer
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,25 @@ def _detect_precision(cfg) -> Tuple[bool, bool]:
     return False, False  # explicit fp32
 
 
+# transformers v5 removed `warmup_ratio`; `warmup_steps` now accepts a float < 1 as a ratio.
+_HAS_WARMUP_RATIO = "warmup_ratio" in {f.name for f in dataclasses.fields(TrainingArguments)}
+
+
+def warmup_kwargs(warmup_steps=0, warmup_ratio: float = 0.0) -> dict:
+    """
+    Warmup kwargs for TrainingArguments/SFTConfig/DPOConfig, compatible with
+    transformers v4 (warmup_steps + warmup_ratio) and v5 (warmup_steps only).
+    warmup_steps > 0 takes precedence over warmup_ratio.
+    """
+    warmup_steps = int(warmup_steps or 0)
+    warmup_ratio = float(warmup_ratio or 0.0)
+    if warmup_steps > 0:
+        return {"warmup_steps": warmup_steps, **({"warmup_ratio": 0.0} if _HAS_WARMUP_RATIO else {})}
+    if _HAS_WARMUP_RATIO:
+        return {"warmup_steps": 0, "warmup_ratio": warmup_ratio}
+    return {"warmup_steps": warmup_ratio}
+
+
 
 def build_sft_args(cfg: DictConfig, role: str = "strong") -> SFTConfig:
     """
@@ -113,8 +133,8 @@ def build_sft_args(cfg: DictConfig, role: str = "strong") -> SFTConfig:
         # warmup: prefer warmup_steps if set (100 per spec), otherwise use warmup_ratio
         # HF Trainer: warmup_steps > 0 overrides warmup_ratio automatically,
         # but we zero-out ratio explicitly to avoid confusion.
-        warmup_steps=sft_cfg.get("warmup_steps", 0),   # 100 per spec (Bảng 9)
-        warmup_ratio=0.0 if sft_cfg.get("warmup_steps", 0) > 0 else sft_cfg.get("warmup_ratio", 0.1),
+        # 100 steps per spec (Bảng 9)
+        **warmup_kwargs(sft_cfg.get("warmup_steps", 0), sft_cfg.get("warmup_ratio", 0.1)),
         weight_decay=sft_cfg.get("weight_decay", 0.05),  # 0.05 per spec
         optim=sft_cfg.get("optim", "paged_adamw_32bit"),  # paged adamw 32bit per spec
         logging_steps=sft_cfg.get("logging_steps", 50),
