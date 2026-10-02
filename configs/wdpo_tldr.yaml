@@ -6,10 +6,11 @@ defaults:
   - base
 
 seed: 42
-method: mwdpo_bootstrap_calibration
+method: wdpo
 dataset_name: tldr
 labeled_ratio: 0.3
 max_prompt_length: 1024               # TL;DR Reddit posts dài, cần 1024 tokens
+max_length: 640                       # TL;DR prompt+summary p95=530, max=603 OPT tokens
 
 weak_model_name: facebook/opt-125m
 # WDPO weak model: LM-based implicit reward (SFT → DPO on D_l)
@@ -75,9 +76,9 @@ weak_model_dpo:
 sft:
   output_dir: outputs/wdpo/tldr/opt-13b/seed42/sft_strong
   num_train_epochs: 3                   # 3 epochs per spec (Bảng 9)
-  per_device_train_batch_size: 16        # opt-2.7b: 1 to avoid OOM; grad_accum=8 → eff=8
+  per_device_train_batch_size: 4          # 1 job per L40S (46 GB)
   per_device_eval_batch_size: 4
-  gradient_accumulation_steps: 1        # effective batch=8 (close to 16 target, limited by VRAM)
+  gradient_accumulation_steps: 4          # effective batch 4x4=16 (unchanged)
   learning_rate: 1.0e-5                 # 1e-5 per spec (Bảng 9)
   lr_scheduler_type: cosine             # cosine per spec (Bảng 9)
   warmup_steps: 100                     # 100 steps per spec (Bảng 9); overrides warmup_ratio
@@ -91,8 +92,8 @@ sft:
 training:
   output_dir: outputs/wdpo/tldr/opt-13b/seed42/strong_model
   num_train_epochs: 5
-  per_device_train_batch_size: 8
-  gradient_accumulation_steps: 1
+  per_device_train_batch_size: 2     # 1 job per L40S (46 GB)
+  gradient_accumulation_steps: 4     # effective batch 2x4=8 (unchanged)
   learning_rate: 5.0e-6                 # 5e-6 per spec (Bảng 8)
   beta: 0.5                             # 0.5 per spec (Bảng 8)
   weight_decay: 0.05                    # 0.05 per spec (Bảng 8)
@@ -105,3 +106,8 @@ training:
 weak_label_output_dir: outputs/wdpo/tldr/opt-13b/seed42/weak_labels
 
 wandb_run_name: vastai-wdpo-tldr-opt13b
+
+# ── Evaluation (one L40S per job) ─────────────────────────────────────────────
+eval:
+  max_gen_samples: 500      # full TL;DR test split is 83,629 prompts; 500 per base.yaml guidance
+  gen_batch_size: 8         # KV cache for 13B x (640+512) tokens fits next to 26 GB of weights
