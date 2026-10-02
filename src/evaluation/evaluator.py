@@ -27,6 +27,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from .metrics import preference_accuracy
 from .reward_model_eval import RewardModelEvaluator
 from .gpt4_eval import GPT4Evaluator
+from src.models.loading import load_causal_lm
 
 
 # ── Dataset → GRA reward model mapping (paper setting) ───────────────────────
@@ -159,21 +160,10 @@ class Evaluator:
         if device_map is not None:
             _load_kwargs["device_map"] = device_map
 
-        logger.info(f"Loading aligned model from {aligned_model_path}")
-        self.aligned_model = AutoModelForCausalLM.from_pretrained(
-            aligned_model_path, **_load_kwargs
-        )
-        if device_map is None:
-            self.aligned_model = self.aligned_model.to(device)
-        self.aligned_model.eval()
-
-        logger.info(f"Loading SFT model from {sft_model_path}")
-        self.sft_model = AutoModelForCausalLM.from_pretrained(
-            sft_model_path, **_load_kwargs
-        )
-        if device_map is None:
-            self.sft_model = self.sft_model.to(device)
-        self.sft_model.eval()
+        # Policies are loaded lazily in run(), one at a time, so two 13B models never share a GPU.
+        self._load_kwargs = _load_kwargs
+        self.aligned_model_path = aligned_model_path
+        self.sft_model_path = sft_model_path
 
         # Use the aligned model's tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(aligned_model_path)
@@ -220,14 +210,20 @@ class Evaluator:
             f"Generating responses from aligned model "
             f"(n={len(prompts)}, batch_size={gen_batch_size})..."
         )
+        aligned_model = self._load_policy(self.aligned_model_path)
         aligned_responses = self._generate_responses(
-            self.aligned_model, prompts, batch_size=gen_batch_size
+            aligned_model, prompts, batch_size=gen_batch_size
         )
+        del aligned_model
+        torch.cuda.empty_cache()
 
         logger.info(f"Generating responses from SFT model (batch_size={gen_batch_size})...")
+        sft_model = self._load_policy(self.sft_model_path)
         sft_responses = self._generate_responses(
-            self.sft_model, prompts, batch_size=gen_batch_size
+            sft_model, prompts, batch_size=gen_batch_size
         )
+        del sft_model
+        torch.cuda.empty_cache()
 
         # Save generated responses
         responses_path = os.path.join(output_dir, "generated_responses.json")
@@ -284,6 +280,14 @@ class Evaluator:
         logger.info(f"All metrics saved to {metrics_path}")
 
         return all_metrics
+
+    def _load_policy(self, path: str):
+        """Load a policy (full checkpoint or LoRA adapter chain, merged) in eval mode."""
+        logger.info(f"Loading model from {path}")
+        model = load_causal_lm(path, **self._load_kwargs)
+        if self.device_map is None:
+            model = model.to(self.device)
+        return model.eval()
 
     @torch.no_grad()
     def _generate_responses(
