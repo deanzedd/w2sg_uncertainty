@@ -141,6 +141,12 @@ def main():
     else:
         logger.info(f"Loading strong model: {model_name}")
     wrapper = get_model_wrapper(model_name, cfg)
+    # TRL's disable_dropout only zeroes nn.Dropout modules, but OPT applies dropout functionally from
+    # float attributes. Zero those too, so policy and reference log-probs are deterministic in DPO.
+    for module in wrapper.model.modules():
+        for attr in ("dropout", "attention_dropout", "activation_dropout", "layerdrop"):
+            if isinstance(getattr(module, attr, None), float):
+                setattr(module, attr, 0.0)
     ref_model = wrapper.get_ref_model()
 
     # ── Dispatch to training method ──────────────────────────────────────

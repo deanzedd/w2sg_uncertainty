@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from omegaconf import DictConfig
 
 from .base_model import BaseModelWrapper
+from .loading import load_causal_lm
 
 
 class OPTModelWrapper(BaseModelWrapper):
@@ -72,7 +73,7 @@ class OPTModelWrapper(BaseModelWrapper):
         if device_map is not None:
             load_kwargs["device_map"] = device_map
 
-        model = AutoModelForCausalLM.from_pretrained(
+        model = load_causal_lm(
             self._model_name,
             **load_kwargs,
         )

@@ -95,6 +95,12 @@ class BaseModelWrapper(ABC):
           The caller should prefer PEFT's `disable_adapter()` context manager
           to avoid loading a separate ref model entirely.
         """
+        if self.cfg.get("use_lora", False):
+            # The policy is the (merged) loaded checkpoint plus a fresh LoRA adapter, so disabling the
+            # adapter recovers the reference exactly. TRL's DPOTrainer does this when ref_model is None,
+            # which avoids holding a second full copy of the model in VRAM.
+            return None
+
         model_name = getattr(self, "_model_name", None)
         if model_name is None:
             raise RuntimeError(
@@ -117,7 +123,8 @@ class BaseModelWrapper(ABC):
         if cache_dir is not None:
             load_kwargs["cache_dir"] = cache_dir
 
-        ref = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+        from .loading import load_causal_lm
+        ref = load_causal_lm(model_name, **load_kwargs)
 
         # Single GPU: device_map is None → model loaded on CPU.
         # Move to CUDA manually (avoids accelerate dispatch hooks that break autograd).
