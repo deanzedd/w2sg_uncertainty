@@ -23,6 +23,7 @@ import argparse
 import json
 import logging
 import os
+import random
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -47,10 +48,26 @@ def parse_args():
     parser.add_argument("--pseudo_labels", type=str, default=None,
                         help="Path to pseudo_labeled.jsonl (for preference accuracy)")
     parser.add_argument("--max_eval_samples", type=int, default=None,
-                        help="Số samples tối đa từ test set đưa vào generation "
-                             "(default=500 để tránh chạy vài tiếng, đặt None để dùng toàn bộ)")
+                        help="Number of unique test prompts to evaluate (seeded random sample); "
+                             "overrides eval.max_gen_samples. Unset in both = full test set.")
     parser.add_argument("overrides", nargs="*")
     return parser.parse_args()
+
+
+def _sample_eval_set(dataset, n: int, seed: int) -> list:
+    """
+    Deduplicate prompts (TL;DR test has several comparisons per post), then draw a
+    seeded random subset of n samples, so every method is evaluated on the same prompts.
+    """
+    seen, unique = set(), []
+    for sample in dataset:
+        if sample["prompt"] not in seen:
+            seen.add(sample["prompt"])
+            unique.append(sample)
+    logger.info(f"Test set: {len(dataset)} samples, {len(unique)} unique prompts")
+    if n >= len(unique):
+        return unique
+    return random.Random(seed).sample(unique, n)
 
 
 def main():
@@ -85,9 +102,12 @@ def main():
         cfg.dataset_name,
         split="test",
         labeled_ratio=1.0,
-        max_samples=args.max_eval_samples,
         cache_dir=cfg.get("cache_dir"),
     )
+    # CLI --max_eval_samples wins over eval.max_gen_samples; null in both = full test set.
+    n_eval = args.max_eval_samples or cfg.get("eval", {}).get("max_gen_samples", None)
+    if n_eval:
+        eval_ds = _sample_eval_set(eval_ds, int(n_eval), seed=cfg.seed)
     logger.info(f"Eval set size: {len(eval_ds)}")
 
     # ── Load pseudo-labels (for preference accuracy) ─────────────────────

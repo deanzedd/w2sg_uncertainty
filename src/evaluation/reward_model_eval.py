@@ -71,7 +71,7 @@ class ClassificationRewardAdapter(BaseRewardAdapter):
     """
     Adapter cho DeBERTa-style reward models (AutoModelForSequenceClassification).
 
-    Input format: prompt + " " + response  (simple concatenation)
+    Input format: tokenizer(prompt, response) sentence pair
 
     Recommended for:
         - OpenAssistant/reward-model-deberta-v3-large-v2  (TL;DR dataset)
@@ -119,13 +119,14 @@ class ClassificationRewardAdapter(BaseRewardAdapter):
             batch_prompts = prompts[i : i + batch_size]
             batch_responses = responses[i : i + batch_size]
 
-            # Format: "<prompt> <response>"
-            texts = [f"{p} {r}" for p, r in zip(batch_prompts, batch_responses)]
-
+            # Encode as a (question, answer) pair, as on the OpenAssistant model card.
+            # longest_first trims the (usually longer) prompt first, so long TL;DR posts
+            # no longer push the summary out of the 512-token window.
             enc = self.tokenizer(
-                texts,
+                batch_prompts,
+                batch_responses,
                 max_length=self.max_length,
-                truncation=True,
+                truncation="longest_first",
                 padding=True,
                 return_tensors="pt",
             ).to(self.device)
