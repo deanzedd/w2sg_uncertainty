@@ -75,6 +75,10 @@ def _detect_precision(cfg) -> Tuple[bool, bool]:
 # transformers v5 removed `warmup_ratio`; `warmup_steps` now accepts a float < 1 as a ratio.
 _HAS_WARMUP_RATIO = "warmup_ratio" in {f.name for f in dataclasses.fields(TrainingArguments)}
 
+# trl >= 1.14 defaults loss_type to "chunked_nll", which patches `model.forward.__func__` and crashes on
+# models dispatched with device_map (accelerate wraps forward in functools.partial). Default to "nll".
+_HAS_LOSS_TYPE = "loss_type" in {f.name for f in dataclasses.fields(SFTConfig)}
+
 
 def warmup_kwargs(warmup_steps=0, warmup_ratio: float = 0.0) -> dict:
     """
@@ -151,6 +155,7 @@ def build_sft_args(cfg: DictConfig, role: str = "strong") -> SFTConfig:
         # gradient_checkpointing: trades compute for VRAM (recomputes activations)
         # Required for 7B+ models. Set sft.gradient_checkpointing=true in config or CLI.
         gradient_checkpointing=sft_cfg.get("gradient_checkpointing", False),
+        **({"loss_type": sft_cfg.get("loss_type", "nll")} if _HAS_LOSS_TYPE else {}),
         # With device_map="auto", HF Trainer must not re-assign model devices
         # ddp_find_unused_parameters is only relevant for DDP, not model parallel
         ddp_find_unused_parameters=False if use_device_map else None,
