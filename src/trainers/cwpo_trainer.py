@@ -111,6 +111,21 @@ class CWPOTrainer(SafeCheckpointMixin, DPOTrainer):
         # Thread-local storage for confidence weights during the loss computation
         self._current_confidence_weights: Optional[torch.Tensor] = None
 
+        # TRL's DataCollatorForPreference only emits input_ids / attention_mask / completion_mask
+        # (+ ref logps), so the confidence_weight column never reaches compute_loss and CW-DPO
+        # silently degrades to plain DPO. Forward it as a per-sample tensor.
+        base_collator = self.data_collator
+
+        def _collate_with_confidence(examples):
+            batch = base_collator(examples)
+            if "confidence_weight" in examples[0]:
+                batch["confidence_weight"] = torch.tensor(
+                    [float(e["confidence_weight"]) for e in examples], dtype=torch.float32
+                )
+            return batch
+
+        self.data_collator = _collate_with_confidence
+
     def compute_loss(
         self,
         model: nn.Module,
@@ -222,10 +237,10 @@ class CWPOTrainer(SafeCheckpointMixin, DPOTrainer):
             if self.ref_model is not None:
                 ref_outputs = self.ref_model(**model_kwargs)
             else:
-                # PEFT: use adapter disabled for reference
-                from peft.utils import disable_adapter
+                # PEFT: the policy is the merged SFT model plus a fresh adapter, so disabling the
+                # adapter gives the reference exactly.
                 unwrapped = self.accelerator.unwrap_model(model)
-                with disable_adapter(unwrapped):
+                with unwrapped.disable_adapter():
                     ref_outputs = unwrapped(**model_kwargs)
 
         ref_shift_logits = ref_outputs.logits[..., :-1, :].contiguous()
