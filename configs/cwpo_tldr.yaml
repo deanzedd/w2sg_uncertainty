@@ -9,6 +9,7 @@ method: cwpo
 dataset_name: tldr
 labeled_ratio: 0.3
 max_prompt_length: 1024               # TL;DR Reddit posts dài, cần 1024 tokens
+max_length: 1024                      # TL;DR: paper filters samples > 1024 tokens (loader: 850 words)
 
 weak_model_name: facebook/opt-125m
 # CWPO weak model: backbone + scalar head (reward model style)
@@ -79,3 +80,6 @@ training:
 weak_label_output_dir: outputs/cwpo/tldr/opt-13b/seed42/weak_labels
 
 wandb_run_name: vast-ai-cwpo-tldr-opt13b
+
+eval:
+  max_gen_samples: 500      # full TL;DR test split is 83,629 prompts; 500 per base.yaml guidance

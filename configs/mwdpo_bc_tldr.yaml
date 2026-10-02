@@ -23,6 +23,7 @@ method: mwdpo_bootstrap_calibration
 dataset_name: tldr
 labeled_ratio: 0.3
 max_prompt_length: 1024
+max_length: 1024                      # TL;DR: paper filters samples > 1024 tokens (loader: 850 words)
 
 # ── Model config ─────────────────────────────────────────────────────────────
 weak_model_name: facebook/opt-125m     # shared backbone for multi-head model
@@ -153,6 +154,7 @@ training:
   gradient_checkpointing: true
 
 eval:
+  max_gen_samples: 500      # full TL;DR test split is 83,629 prompts; 500 per base.yaml guidance
   output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/tldr/opt-13b/seed42/eval
 
 wandb_run_name: vastai_mwdpo_1phase_threshold0.8_linear_boots-tldr-opt-13b-phase1

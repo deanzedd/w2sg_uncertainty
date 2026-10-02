@@ -6,7 +6,7 @@ method: baseline_dpo
 dataset_name: tldr
 labeled_ratio: 0.3
 max_prompt_length: 1024               # TL;DR Reddit posts dài, cần 1024 tokens
-max_length: 640                       # TL;DR prompt+summary p95=530, max=603 OPT tokens
+max_length: 1024                      # TL;DR: paper filters samples > 1024 tokens (loader: 850 words)
 
 strong_model_name: facebook/opt-13b
 # Alternative strong models:
