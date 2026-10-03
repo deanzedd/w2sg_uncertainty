@@ -35,7 +35,7 @@ lora_target_modules: null  # null = PEFT auto-detects (q_proj, v_proj, etc.)
 sft:
   output_dir: outputs/baseline_dpo/tldr/qwen2.5-7b/seed42/weak_labels
   num_train_epochs: 3                   # 3 epochs per spec (Bảng 9)
-  per_device_train_batch_size: 4          # Qwen2.5-7B, 1x H100, no grad ckpt (est. peak ~36 GB at 1024 tokens)
+  per_device_train_batch_size: 4          # Qwen2.5-7B, 1x H100, with grad ckpt
   per_device_eval_batch_size: 4
   gradient_accumulation_steps: 4          # effective batch 16
   learning_rate: 1.0e-5                 # 1e-5 per spec (Bảng 9)
@@ -43,14 +43,14 @@ sft:
   warmup_steps: 100                     # 100 steps per spec (Bảng 9); overrides warmup_ratio
   weight_decay: 0.05                    # 0.05 per spec (Bảng 9)
   optim: paged_adamw_32bit              # paged adamw 32bit per spec (Bảng 9)
-  gradient_checkpointing: false        # fits on H100 without it; ~27% faster SFT
+  gradient_checkpointing: true         # Qwen2.5-7B SFT diverges to NaN without it (step-1 loss ~1.8e4)
   save_steps: 10000
   eval_steps: 10000
 
 training:
   output_dir: outputs/baseline_dpo/tldr/qwen2.5-7b/seed42/strong_model
   num_train_epochs: 5
-  per_device_train_batch_size: 2      # Qwen2.5-7B, 1x H100, no grad ckpt (est. peak ~36 GB at 1024 tokens)
+  per_device_train_batch_size: 2      # Qwen2.5-7B, 1x H100, with grad ckpt
   per_device_eval_batch_size: 2
   gradient_accumulation_steps: 4      # effective batch 8
   learning_rate: 5.0e-6
@@ -65,7 +65,7 @@ training:
   eval_steps: 10000
   bf16: true
   fp16: false
-  gradient_checkpointing: false        # fits on H100 without it; ~17% faster DPO
+  gradient_checkpointing: true         # keep on for Qwen2.5-7B (see sft)
 
 wandb_run_name: h100-baseline-dpo-tldr-qwen7b
 
