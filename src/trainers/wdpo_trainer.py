@@ -28,7 +28,7 @@ from omegaconf import DictConfig
 from trl import DPOConfig, DPOTrainer
 
 from .cwpo_trainer import SafeCheckpointMixin
-from .sft_trainer import _detect_precision, warmup_kwargs
+from .sft_trainer import _detect_precision, distributed_kwargs, warmup_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,7 @@ def build_wdpo_training_args(cfg: DictConfig) -> DPOConfig:
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
         # gradient_checkpointing: required for 7B+ models to avoid OOM
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),  # True per spec
+        **distributed_kwargs(),
         remove_unused_columns=False,
         ddp_find_unused_parameters=False if use_device_map else None,
         report_to="wandb" if cfg.get("use_wandb", True) else "none",

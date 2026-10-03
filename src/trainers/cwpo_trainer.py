@@ -49,7 +49,7 @@ from transformers.trainer import TRAINER_STATE_NAME
 from trl import DPOConfig, DPOTrainer
 
 from ..losses.dpo_loss import compute_log_probs
-from .sft_trainer import _detect_precision, warmup_kwargs
+from .sft_trainer import _detect_precision, distributed_kwargs, warmup_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -379,6 +379,7 @@ def build_cwpo_training_args(cfg: DictConfig) -> DPOConfig:
         remove_unused_columns=False,
         # gradient_checkpointing: required for 7B+ models to avoid OOM
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),  # True per spec
+        **distributed_kwargs(),
         ddp_find_unused_parameters=False if use_device_map else None,
         report_to="wandb" if cfg.get("use_wandb", True) else "none",
         run_name=cfg.get("wandb_run_name", None),

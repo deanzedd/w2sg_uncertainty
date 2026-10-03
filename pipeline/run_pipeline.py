@@ -172,9 +172,18 @@ def parse_args():
 
 
 def run_script(script_name: str, *extra_args):
-    """Run a script in the scripts/ directory."""
+    """Run a script in the scripts/ directory.
+
+    With W2SG_NUM_GPUS=N (N > 1) the strong SFT / DPO stages run data-parallel via torchrun on the
+    visible GPUs; per_device_train_batch_size x gradient_accumulation_steps x N is the effective batch.
+    """
     script_path = os.path.join(SCRIPTS_DIR, script_name)
-    cmd = [sys.executable, script_path] + list(extra_args)
+    n_gpus = int(os.environ.get("W2SG_NUM_GPUS", "1"))
+    if n_gpus > 1 and script_name in ("train_sft.py", "train_strong.py"):
+        cmd = [sys.executable, "-m", "torch.distributed.run", "--standalone",
+               f"--nproc_per_node={n_gpus}", script_path] + list(extra_args)
+    else:
+        cmd = [sys.executable, script_path] + list(extra_args)
     logger.info(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, check=True)
     return result.returncode

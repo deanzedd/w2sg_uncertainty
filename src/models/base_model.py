@@ -14,6 +14,7 @@ The base class handles:
 from __future__ import annotations
 
 import copy
+import os
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Optional, Tuple
 
@@ -164,6 +165,10 @@ class BaseModelWrapper(ABC):
         explicit_device_map = cfg.get("device_map", None)
         if explicit_device_map is not None:
             return explicit_device_map
+
+        # torchrun data parallel: each process keeps the whole model on its own GPU.
+        if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+            return {"": int(os.environ.get("LOCAL_RANK", "0"))}
 
         # LoRA with multi-GPU: PEFT requires device_map
         if cfg.get("use_lora", False):

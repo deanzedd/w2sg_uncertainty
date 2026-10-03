@@ -53,6 +53,9 @@ def init_wandb(cfg: DictConfig, tags: Optional[list] = None) -> None:
     """Initialize Weights & Biases run."""
     if not cfg.get("use_wandb", True):
         return
+    # Under torchrun only the main process logs (the HF Trainer callbacks do the same).
+    if int(os.environ.get("RANK", "0")) != 0:
+        return
 
     # LU1 fix: lazy import so wandb not installed doesn't crash non-wandb runs
     import wandb  # noqa: PLC0415

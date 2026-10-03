@@ -15,7 +15,7 @@ from omegaconf import DictConfig
 from trl import DPOConfig, DPOTrainer
 
 from .cwpo_trainer import SafeCheckpointMixin
-from .sft_trainer import _detect_precision, warmup_kwargs
+from .sft_trainer import _detect_precision, distributed_kwargs, warmup_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,7 @@ def build_baseline_dpo_args(cfg: DictConfig) -> DPOConfig:
         beta=float(train_cfg.get("beta", 0.5)),           # 0.5 per spec (Bảng 8)
         max_grad_norm=train_cfg.get("max_grad_norm", 1.0),
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),  # True per spec
+        **distributed_kwargs(),
         remove_unused_columns=False,
         report_to="wandb" if cfg.get("use_wandb", True) else "none",
         run_name=cfg.get("wandb_run_name", None),

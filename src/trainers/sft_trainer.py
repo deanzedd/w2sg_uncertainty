@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 from typing import Optional, Tuple
 
 import torch
@@ -96,6 +97,14 @@ def warmup_kwargs(warmup_steps=0, warmup_ratio: float = 0.0) -> dict:
 
 
 
+def distributed_kwargs() -> dict:
+    """Trainer args for torchrun data parallel: LoRA + gradient checkpointing under DDP needs
+    non-reentrant checkpoints. Empty for single-process runs, so they are unchanged."""
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        return {"gradient_checkpointing_kwargs": {"use_reentrant": False}}
+    return {}
+
+
 def build_sft_args(cfg: DictConfig, role: str = "strong") -> SFTConfig:
     """
     Build SFTConfig from config.
@@ -155,6 +164,7 @@ def build_sft_args(cfg: DictConfig, role: str = "strong") -> SFTConfig:
         # gradient_checkpointing: trades compute for VRAM (recomputes activations)
         # Required for 7B+ models. Set sft.gradient_checkpointing=true in config or CLI.
         gradient_checkpointing=sft_cfg.get("gradient_checkpointing", False),
+        **distributed_kwargs(),
         **({"loss_type": sft_cfg.get("loss_type", "nll")} if _HAS_LOSS_TYPE else {}),
         # With device_map="auto", HF Trainer must not re-assign model devices
         # ddp_find_unused_parameters is only relevant for DDP, not model parallel
