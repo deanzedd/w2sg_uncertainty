@@ -106,6 +106,7 @@ Usage:
 import argparse
 import logging
 import os
+import socket
 import subprocess
 import sys
 
@@ -180,8 +181,12 @@ def run_script(script_name: str, *extra_args):
     script_path = os.path.join(SCRIPTS_DIR, script_name)
     n_gpus = int(os.environ.get("W2SG_NUM_GPUS", "1"))
     if n_gpus > 1 and script_name in ("train_sft.py", "train_strong.py"):
-        cmd = [sys.executable, "-m", "torch.distributed.run", "--standalone",
-               f"--nproc_per_node={n_gpus}", script_path] + list(extra_args)
+        # Rendezvous on 127.0.0.1: --standalone resolves the hostname, which may not route locally.
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        cmd = [sys.executable, "-m", "torch.distributed.run", "--nnodes=1", f"--nproc_per_node={n_gpus}",
+               "--master_addr=127.0.0.1", f"--master_port={port}", script_path] + list(extra_args)
     else:
         cmd = [sys.executable, script_path] + list(extra_args)
     logger.info(f"Running: {' '.join(cmd)}")
