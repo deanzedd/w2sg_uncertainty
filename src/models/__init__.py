@@ -1,3 +1,9 @@
+import torch
+
+# On H100 the cuDNN SDPA backend returns NaN gradients for some padded batches (Qwen2.5-3B/7B LoRA
+# SFT diverged from the second step); use the flash / memory-efficient kernels instead.
+torch.backends.cuda.enable_cudnn_sdp(False)
+
 from .base_model import BaseModelWrapper
 from .opt_model import OPTModelWrapper
 from .qwen_model import Qwen25ModelWrapper
