@@ -178,7 +178,7 @@ def main():
     )
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype  = torch.bfloat16 if cfg.get("bf16", True) else torch.float32
+    dtype  = torch.float32   # trainable weights stay fp32; the trainer runs the forward pass in bf16 autocast
 
     # ── Load D_l ──────────────────────────────────────────────────────────
     max_s = args.max_samples if args.debug else None

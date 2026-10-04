@@ -85,7 +85,7 @@ def main():
 
     # ── Load reward model ────────────────────────────────────────────────
     logger.info(f"Loading weak backbone: {cfg.weak_model_name}")
-    dtype = torch.bfloat16 if cfg.get("bf16", True) else torch.float32
+    dtype = torch.float32   # trainable weights stay fp32; the trainer runs the forward pass in bf16 autocast
     reward_model, tokenizer = load_reward_model_and_tokenizer(
         cfg.weak_model_name,
         cache_dir=cfg.get("cache_dir"),

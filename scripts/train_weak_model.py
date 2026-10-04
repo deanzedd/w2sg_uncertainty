@@ -171,6 +171,9 @@ def main():
             "device_map": None,   # weak model always fits on a single GPU
         }))
         weak_wrapper = get_model_wrapper(cfg.weak_model_name, weak_cfg)
+        # Full fine-tune: keep fp32 weights so Trainer(bf16=True) runs bf16 autocast over them.
+        # Pure-bf16 weights lose AdamW updates at lr 1e-5 to rounding (~90% of weights never move).
+        weak_wrapper.model.float()
 
         # Override sft output_dir with weak model paths
         sft_args = build_sft_args(sft_cfg, role="weak")
@@ -228,6 +231,7 @@ def main():
         "device_map": None,   # single-GPU: avoids accelerate fp32-cast OOM
     }))
     policy_wrapper = get_model_wrapper(weak_dpo_load_path, weak_dpo_cfg)
+    policy_wrapper.model.float()   # fp32 weights + bf16 autocast, as for the weak SFT above
 
     # Reference model = frozen deep copy of π_w^SFT.
     # Ensure it lives on the same device as the policy model so DPOTrainer
@@ -235,6 +239,7 @@ def main():
     ref_model = policy_wrapper.get_ref_model()
     if hasattr(policy_wrapper.model, "device"):
         ref_model = ref_model.to(policy_wrapper.model.device)
+    ref_model.float()              # same weights as the policy at step 0
 
     # Convert D_l to HF Dataset format for DPOTrainer
     import datasets as hf_datasets

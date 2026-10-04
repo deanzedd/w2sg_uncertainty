@@ -17,6 +17,7 @@ useful as an ablation to isolate the effect of bootstrapping vs. multi-head alon
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -72,6 +73,14 @@ class MultiHeadRewardTrainer:
         self.backbone_name = backbone_name
         self.use_bootstrap = use_bootstrap
         self.freeze_backbone = freeze_backbone
+        self.use_bf16 = bool(self.cfg.get("bf16", True)) and str(device).startswith("cuda")
+
+    def _autocast(self):
+        # Weights stay fp32 and only the forward pass runs in bf16: with pure-bf16 weights, AdamW
+        # updates at lr 1e-5 fall below bf16 resolution and ~90% of the backbone never changes.
+        if self.use_bf16:
+            return torch.autocast("cuda", dtype=torch.bfloat16)
+        return contextlib.nullcontext()
 
     def train(
         self,
@@ -215,8 +224,9 @@ class MultiHeadRewardTrainer:
                 rejected_mask = batch["rejected_attention_mask"].to(self.device)
 
                 # Forward: (batch, K) for chosen and rejected
-                scores_chosen   = self.model(chosen_ids, chosen_mask)
-                scores_rejected = self.model(rejected_ids, rejected_mask)
+                with self._autocast():
+                    scores_chosen   = self.model(chosen_ids, chosen_mask).float()
+                    scores_rejected = self.model(rejected_ids, rejected_mask).float()
 
                 # Bootstrap masks: one boolean (batch,) tensor per head
                 bootstrap_masks = None
@@ -287,8 +297,9 @@ class MultiHeadRewardTrainer:
             rejected_ids  = batch["rejected_input_ids"].to(self.device)
             rejected_mask = batch["rejected_attention_mask"].to(self.device)
 
-            s_chosen   = self.model(chosen_ids, chosen_mask).mean(dim=-1)   # (batch,)
-            s_rejected = self.model(rejected_ids, rejected_mask).mean(dim=-1)
+            with self._autocast():
+                s_chosen   = self.model(chosen_ids, chosen_mask).float().mean(dim=-1)   # (batch,)
+                s_rejected = self.model(rejected_ids, rejected_mask).float().mean(dim=-1)
 
             correct += (s_chosen > s_rejected).sum().item()
             total   += s_chosen.size(0)

@@ -12,6 +12,7 @@ Training objective:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from typing import Dict, List, Optional
@@ -57,6 +58,14 @@ class RewardModelTrainer:
         # enabling load_reward_model_and_tokenizer to reconstruct the model
         # standalone from a checkpoint directory.
         self.backbone_name = backbone_name
+        self.use_bf16 = bool(self.cfg.get("bf16", True)) and str(device).startswith("cuda")
+
+    def _autocast(self):
+        # Weights stay fp32 and only the forward pass runs in bf16: with pure-bf16 weights, AdamW
+        # updates at lr 1e-5 fall below bf16 resolution and ~90% of the backbone never changes.
+        if self.use_bf16:
+            return torch.autocast("cuda", dtype=torch.bfloat16)
+        return contextlib.nullcontext()
 
     def train(
         self,
@@ -170,8 +179,9 @@ class RewardModelTrainer:
                 rejected_ids = batch["rejected_input_ids"].to(self.device)
                 rejected_mask = batch["rejected_attention_mask"].to(self.device)
 
-                score_chosen = self.model(chosen_ids, chosen_mask)
-                score_rejected = self.model(rejected_ids, rejected_mask)
+                with self._autocast():
+                    score_chosen = self.model(chosen_ids, chosen_mask).float()
+                    score_rejected = self.model(rejected_ids, rejected_mask).float()
 
                 loss = self.model.bradley_terry_loss(score_chosen, score_rejected)
 
@@ -232,8 +242,9 @@ class RewardModelTrainer:
             rejected_ids = batch["rejected_input_ids"].to(self.device)
             rejected_mask = batch["rejected_attention_mask"].to(self.device)
 
-            s_chosen = self.model(chosen_ids, chosen_mask)
-            s_rejected = self.model(rejected_ids, rejected_mask)
+            with self._autocast():
+                s_chosen = self.model(chosen_ids, chosen_mask).float()
+                s_rejected = self.model(rejected_ids, rejected_mask).float()
 
             correct += (s_chosen > s_rejected).sum().item()
             total += len(s_chosen)
