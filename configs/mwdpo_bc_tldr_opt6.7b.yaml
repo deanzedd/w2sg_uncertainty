@@ -1,0 +1,108 @@
+# MWDPO-BC on TL;DR, OPT-125m (weak) -> OPT-6.7B (strong), one shared H100 (~23 GB free).
+# Weak side (multi-head reward model + D_h/D_l labels) is reused from the OPT-1.3B run, which has the
+# same OPT-125m weak model and settings: run with --skip_reward_model --skip_labeling.
+#
+# Usage:
+#   python pipeline/run_pipeline.py --config configs/mwdpo_bc_tldr_opt6.7b.yaml --skip_reward_model --skip_labeling
+
+defaults:
+  - base
+
+seed: 42
+method: mwdpo_bootstrap_calibration
+dataset_name: tldr
+labeled_ratio: 0.3
+max_prompt_length: 1024
+max_length: 1024                      # TL;DR: paper filters samples > 1024 tokens (loader: 850 words)
+
+# ── Model config ─────────────────────────────────────────────────────────────
+weak_model_name: facebook/opt-125m     # shared backbone for multi-head model
+strong_model_name: facebook/opt-6.7b
+
+# ── Multi-GPU ─────────────────────────────────────────────────────────────────
+device_map: null
+
+# ── LoRA (same as MWDPO) ──────────────────────────────────────────────────────
+use_lora: true
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules: null
+
+# ── Bootstrap Calibration Config (same as the OPT-1.3B run that produced the reused labels) ─
+bootstrap_calibration:
+  num_heads: 3
+  run_phase1_pretrain: false
+  phase1_output_dir: null
+  head_type: linear
+  mlp_hidden: null
+  head_dropout: 0.0
+  use_bootstrap: true
+  use_calibration: false
+  cal_val_ratio: 0.1
+  agreement_mode: unanimous_with_threshold
+  confidence_threshold: 0.8
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/tldr/opt-1.3b/seed42/reward_model
+
+# ── D_h and D_l: reused from the OPT-1.3B run ────────────────────────────────
+multi_weak_label_output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/tldr/opt-1.3b/seed42/weak_labels
+weak_label_output_dir:       outputs/mwdpo_1phase_threshold0.8_linear_boots/tldr/opt-1.3b/seed42/weak_labels
+
+phase1_data_mode: d_high
+
+reward_model:
+  num_train_epochs: 5
+  per_device_train_batch_size: 64
+  gradient_accumulation_steps: 2
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  warmup_ratio: 0.0
+  bf16: true
+  fp16: false
+  logging_steps: 50
+  save_steps: 3000
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/tldr/opt-1.3b/seed42/reward_model
+
+# ── Strong Model SFT on D_h ──────────────────────────────────────────────────
+sft:
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/tldr/opt-6.7b/seed42/sft_strong
+  num_train_epochs: 3
+  per_device_train_batch_size: 4          # OPT-6.7B (13.3 GB bf16) on ~23 GB free
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 4          # effective batch 16
+  learning_rate: 1.0e-5
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  save_steps: 3000
+  eval_steps: 3000
+  optim: paged_adamw_32bit
+  gradient_checkpointing: true
+
+# ── Phase 1: Standard DPO on D_h ─────────────────────────────────────────────
+training:
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/tldr/opt-6.7b/seed42/strong_model
+  num_train_epochs: 5
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 4      # effective batch 8
+  learning_rate: 5.0e-6
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  optim: paged_adamw_32bit
+  beta: 0.5
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 2000
+  eval_steps: 2000
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
+
+eval:
+  max_gen_samples: 500
+  gen_batch_size: 8         # KV cache for 8 x (1024 + 512) tokens ~6 GB next to the 13.3 GB policy
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/tldr/opt-6.7b/seed42/eval
+
+wandb_run_name: h100_mwdpo_1phase_threshold0.8_linear_boots-tldr-opt-6.7b-phase1
