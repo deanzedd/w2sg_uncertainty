@@ -1,0 +1,101 @@
+# MWDPO-BC on HH-RLHF, OPT-125m (weak) -> OPT-13B (strong), one shared H100 (~27 GB for this job).
+# Same MWDPO-BC settings as configs/mwdpo_bc_hh_rlhf.yaml (Qwen family); only the models, batch layout and
+# output paths differ. Effective batches are unchanged (SFT 16, DPO 8).
+#
+# Usage:
+#   python pipeline/run_pipeline.py --config configs/mwdpo_bc_hh_rlhf_opt13b.yaml
+
+defaults:
+  - base
+
+seed: 42
+method: mwdpo_bootstrap_calibration
+dataset_name: hh_rlhf
+labeled_ratio: 0.3
+max_prompt_length: 512                # HH-RLHF: loader drops samples > 512 tokens; max_length 512 from base
+
+# ── Model config ─────────────────────────────────────────────────────────────
+weak_model_name: facebook/opt-125m     # shared backbone for multi-head model
+strong_model_name: facebook/opt-13b
+
+device_map: null
+
+use_lora: true
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules: null
+
+bootstrap_calibration:
+  num_heads: 3
+  run_phase1_pretrain: false
+  phase1_output_dir: null
+  head_type: linear
+  mlp_hidden: null
+  head_dropout: 0.0
+  use_bootstrap: true
+  use_calibration: false
+  cal_val_ratio: 0.1
+  agreement_mode: unanimous_with_threshold
+  confidence_threshold: 0.8
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/opt-13b/seed42/reward_model
+
+multi_weak_label_output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/opt-13b/seed42/weak_labels
+weak_label_output_dir:       outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/opt-13b/seed42/weak_labels
+
+phase1_data_mode: d_high
+
+reward_model:
+  num_train_epochs: 5
+  per_device_train_batch_size: 32       # paper Table 7 weak batch size
+  gradient_accumulation_steps: 2
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  warmup_ratio: 0.0
+  bf16: true
+  fp16: false
+  logging_steps: 50
+  save_steps: 5000
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/opt-13b/seed42/reward_model
+
+sft:
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/opt-13b/seed42/sft_strong
+  num_train_epochs: 3
+  per_device_train_batch_size: 2          # OPT-13B (25.7 GB bf16) in ~27 GB
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 8          # effective batch 16
+  learning_rate: 1.0e-5
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  save_steps: 2000
+  eval_steps: 5000
+  optim: paged_adamw_32bit
+  gradient_checkpointing: true
+
+training:
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/opt-13b/seed42/strong_model
+  num_train_epochs: 5
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 8      # effective batch 8
+  learning_rate: 5.0e-6
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  optim: paged_adamw_32bit
+  beta: 0.5
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 2000
+  eval_steps: 5000
+  bf16: true
+  fp16: false
+  gradient_checkpointing: true
+
+eval:
+  max_gen_samples: 500      # same as the TL;DR runs; base default (null) would generate for the whole test split
+  gen_batch_size: 4         # KV cache for 4 x (512 + 512) tokens next to the 25.7 GB policy
+  output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/opt-13b/seed42/eval
+
+wandb_run_name: h100_mwdpo_1phase_threshold0.8_linear_boots-hh_rlhf-opt-13b-phase1
