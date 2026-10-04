@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from typing import Optional
 
 # LU1 fix: do NOT import wandb at module level.
@@ -63,14 +64,25 @@ def init_wandb(cfg: DictConfig, tags: Optional[list] = None) -> None:
     run_name = cfg.get("wandb_run_name", None)
     project = cfg.get("wandb_project", "w2sg_uncertainty")
 
-    wandb.init(
+    init_kwargs = dict(
         project=project,
         name=run_name,
         config=OmegaConf.to_container(cfg, resolve=True),
         tags=tags or [],
     )
+    # A W&B server timeout must not kill a multi-day job: retry once, then log offline
+    # (sync later with `wandb sync wandb/offline-run-*`).
+    for attempt in range(2):
+        try:
+            wandb.init(**init_kwargs)
+            break
+        except Exception as e:  # wandb.errors.CommError on server timeouts
+            logging.getLogger(__name__).warning(f"wandb.init failed (attempt {attempt + 1}): {e}")
+            time.sleep(30)
+    else:
+        wandb.init(mode="offline", **init_kwargs)
     logging.getLogger(__name__).info(
-        f"WandB initialized: project={project}, run={run_name}"
+        f"WandB initialized: project={project}, run={run_name}, mode={wandb.run.settings.mode}"
     )
 
 
