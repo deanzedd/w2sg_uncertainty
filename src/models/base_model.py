@@ -172,6 +172,10 @@ class BaseModelWrapper(ABC):
 
         # LoRA with multi-GPU: PEFT requires device_map
         if cfg.get("use_lora", False):
+            # One visible GPU: pin the whole model there. "auto" silently offloads layers to CPU/meta
+            # when other processes hold memory, and LoRA backward then fails on the meta tensors.
+            if _torch.cuda.is_available() and _torch.cuda.device_count() == 1:
+                return {"": 0}
             return "auto"
 
         # Auto-detect:
