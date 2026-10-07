@@ -1,0 +1,90 @@
+# WDPO on HH-RLHF, OPT-125m (weak) -> OPT-13B (strong), one shared H100 (~27 GB for this job).
+# The weak model (SFT -> DPO) and weak labels are reused from the OPT-6.7B HH run (same OPT-125m weak model
+# and settings): run with --skip_weak_model --skip_labeling.
+# Same settings as configs/wdpo_hh_rlhf.yaml (Qwen family) except the models, batch layout and output
+# paths. Effective batches are unchanged (weak SFT 64, weak DPO 16, SFT 16, DPO 8).
+#
+# Usage:
+#   python pipeline/run_pipeline.py --config configs/wdpo_hh_rlhf_opt13b.yaml --skip_weak_model --skip_labeling
+
+defaults:
+  - base
+
+seed: 42
+method: wdpo
+dataset_name: hh_rlhf
+labeled_ratio: 0.3
+max_prompt_length: 512                # HH-RLHF: loader drops samples > 512 tokens; max_length 512 from base
+
+weak_model_name: facebook/opt-125m
+strong_model_name: facebook/opt-13b
+
+device_map: null
+
+use_lora: true
+lora_r: 8
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target_modules: null
+
+weak_model_sft:
+  output_dir: outputs/wdpo/hh_rlhf/opt-6.7b/seed42/weak_model_sft
+  num_train_epochs: 5
+  per_device_train_batch_size: 16
+  gradient_accumulation_steps: 4          # effective batch 64, as 32 x 2 in the Qwen config
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  warmup_ratio: 0.0
+  gradient_checkpointing: false
+  save_steps: 30000
+  eval_steps: 30000
+
+weak_model_dpo:
+  output_dir: outputs/wdpo/hh_rlhf/opt-6.7b/seed42/weak_model_dpo
+  num_train_epochs: 5
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 4          # effective batch 16, as 16 x 1 in the Qwen config
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  warmup_ratio: 0.0
+  beta: 0.1
+  gradient_checkpointing: false
+  save_steps: 10000
+  eval_steps: 10000
+
+sft:
+  output_dir: outputs/wdpo/hh_rlhf/opt-13b/seed42/sft_strong
+  num_train_epochs: 3
+  per_device_train_batch_size: 2          # OPT-13B (25.7 GB bf16) in ~27 GB
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 8          # effective batch 16
+  learning_rate: 1.0e-5
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  optim: paged_adamw_32bit
+  gradient_checkpointing: true
+  save_steps: 2000
+  eval_steps: 30000
+
+training:
+  output_dir: outputs/wdpo/hh_rlhf/opt-13b/seed42/strong_model
+  num_train_epochs: 5
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8          # effective batch 8
+  learning_rate: 5.0e-6
+  beta: 0.5
+  weight_decay: 0.05
+  optim: paged_adamw_32bit
+  warmup_steps: 100
+  gradient_checkpointing: true
+  save_steps: 2000
+  eval_steps: 30000
+
+eval:
+  max_gen_samples: 500      # same as all other runs; base default (null) would generate for the whole test split
+  gen_batch_size: 4         # KV cache for 4 x (512 + 512) tokens next to the 25.7 GB policy
+  output_dir: outputs/wdpo/hh_rlhf/opt-13b/seed42/eval
+
+weak_label_output_dir: outputs/wdpo/hh_rlhf/opt-6.7b/seed42/weak_labels   # reused from the OPT-6.7B run
+wandb_run_name: h100-wdpo-hh_rlhf-opt13b

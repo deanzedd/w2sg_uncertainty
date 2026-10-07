@@ -1,0 +1,13 @@
+torch>=2.1.0
+transformers>=4.40.0
+trl>=0.8.6
+datasets>=2.18.0
+accelerate>=0.27.0
+peft>=0.10.0
+wandb>=0.16.0
+omegaconf>=2.3.0
+numpy>=1.24.0
+scipy>=1.11.0
+openai>=1.0.0
+tqdm>=4.66.0
+rich>=13.0.0

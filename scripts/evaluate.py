@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""
+Evaluation script — compute GRA and optionally GPT-4 win rate.
+
+Usage:
+    python scripts/evaluate.py \
+        --config configs/wdpo_hh_rlhf.yaml \
+        --aligned_model_path outputs/wdpo/hh_rlhf/strong_model \
+        --sft_model_path outputs/wdpo/hh_rlhf/sft_strong
+
+    # With GPT-4 win rate:
+    python scripts/evaluate.py \
+        --config configs/cwpo_hh_rlhf.yaml \
+        --aligned_model_path outputs/cwpo/hh_rlhf/strong_model \
+        --sft_model_path outputs/cwpo/hh_rlhf/sft_strong \
+        --run_gpt4 \
+        --pseudo_labels outputs/cwpo/hh_rlhf/weak_labels/pseudo_labeled.jsonl
+
+    python scripts/evaluate.py --config configs/mwdpo_bc_hh_rlhf.yaml --aligned_model_path outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/strong_model_phase1 --sft_model_path outputs/mwdpo_2phase/hh_rlhf/Qwen2.5-1.5B/seed42/sft_strong
+"""
+
+import argparse
+import json
+import logging
+import os
+import random
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from src.data import get_dataset
+from src.evaluation.evaluator import Evaluator
+from src.weak_labeler.base_labeler import BaseWeakLabeler
+from src.utils import load_config, print_config, set_seed, setup_logging
+
+logger = logging.getLogger(__name__)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Evaluation (GRA + GPT-4 win rate)")
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--aligned_model_path", required=True,
+                        help="Path to aligned model (WDPO/CWPO) checkpoint")
+    parser.add_argument("--sft_model_path", required=True,
+                        help="Path to SFT baseline checkpoint")
+    parser.add_argument("--run_gpt4", action="store_true",
+                        help="Run GPT-4 win rate evaluation (requires OPENAI_API_KEY)")
+    parser.add_argument("--pseudo_labels", type=str, default=None,
+                        help="Path to pseudo_labeled.jsonl (for preference accuracy)")
+    parser.add_argument("--max_eval_samples", type=int, default=None,
+                        help="Number of unique test prompts to evaluate (seeded random sample); "
+                             "overrides eval.max_gen_samples. Unset in both = full test set.")
+    parser.add_argument("overrides", nargs="*")
+    return parser.parse_args()
+
+
+def _sample_eval_set(dataset, n: int, seed: int) -> list:
+    """
+    Deduplicate prompts (TL;DR test has several comparisons per post), then draw a
+    seeded random subset of n samples, so every method is evaluated on the same prompts.
+    """
+    seen, unique = set(), []
+    for sample in dataset:
+        if sample["prompt"] not in seen:
+            seen.add(sample["prompt"])
+            unique.append(sample)
+    logger.info(f"Test set: {len(dataset)} samples, {len(unique)} unique prompts")
+    if n >= len(unique):
+        return unique
+    return random.Random(seed).sample(unique, n)
+
+
+def main():
+    args = parse_args()
+    cfg = load_config(args.config, args.overrides)
+    setup_logging(cfg)
+    print_config(cfg)
+    set_seed(cfg.seed)
+
+    import torch
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # ── Resolve device_map cho aligned + SFT models ────────────────────────────
+    # eval_device_map trong config được ưu tiên hơn device_map (training)
+    # Vì evaluation load 2 model lớn cùng lúc, cần phân bổ qua nhiều GPU
+    eval_device_map = (
+        cfg.get("eval", {}).get("device_map", None)  # eval.device_map (specific)
+        or cfg.get("device_map", None)               # top-level device_map (training fallback)
+    )
+    # Nếu vẫn None và có nhiều hơn 2 GPU khả dụng → tự dùng "auto" để tránh OOM
+    if eval_device_map is None and torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        logger.info(
+            f"eval_device_map not set but {torch.cuda.device_count()} GPUs available. "
+            "Forcing device_map='auto' for evaluation to avoid OOM."
+        )
+        eval_device_map = "auto"
+    logger.info(f"Evaluator device_map: {eval_device_map}")
+
+    # ── Load eval dataset ────────────────────────────────────────────────
+    logger.info(f"Loading test dataset: {cfg.dataset_name}")
+    eval_ds = get_dataset(
+        cfg.dataset_name,
+        split="test",
+        labeled_ratio=1.0,
+        cache_dir=cfg.get("cache_dir"),
+    )
+    # CLI --max_eval_samples wins over eval.max_gen_samples; null in both = full test set.
+    n_eval = args.max_eval_samples or cfg.get("eval", {}).get("max_gen_samples", None)
+    if n_eval:
+        eval_ds = _sample_eval_set(eval_ds, int(n_eval), seed=cfg.seed)
+    logger.info(f"Eval set size: {len(eval_ds)}")
+
+    # ── Load pseudo-labels (for preference accuracy) ─────────────────────
+    pseudo_labels = None
+    human_labels = None
+    if args.pseudo_labels and os.path.exists(args.pseudo_labels):
+        pseudo_labels = BaseWeakLabeler.load(args.pseudo_labels)
+        # PA fix: preference_accuracy measures weak label quality by comparing
+        # pseudo_labels (weak model's chosen/rejected on D_u) against the
+        # ORIGINAL human annotations on D_u (ground truth before relabeling).
+        #
+        # OLD (WRONG): compared D_u pseudo_labels vs D_l human_labels.
+        # D_l and D_u are DISJOINT splits (no shared prompts), so the prompt
+        # lookup in preference_accuracy() always returns total=0 → accuracy=0.
+        #
+        # FIX: load D_u ground truth (original HF chosen labels) as human_labels.
+        # These share the exact same prompts as pseudo_labels → meaningful comparison.
+        train_ds = get_dataset(
+            cfg.dataset_name,
+            split="train",
+            labeled_ratio=cfg.labeled_ratio,
+            seed=cfg.seed,
+            cache_dir=cfg.get("cache_dir"),
+        )
+        _, unlabeled_ds = train_ds.get_labeled_unlabeled_split()
+        human_labels = list(unlabeled_ds)  # D_u original human labels (ground truth)
+
+    # ── Run evaluation ───────────────────────────────────────────────────
+    evaluator = Evaluator(
+        aligned_model_path=args.aligned_model_path,
+        sft_model_path=args.sft_model_path,
+        cfg=cfg,
+        device=device,
+        device_map=eval_device_map,
+    )
+
+    metrics = evaluator.run(
+        eval_dataset=eval_ds,
+        run_gpt4=args.run_gpt4,
+        pseudo_labels=pseudo_labels,
+        human_labels=human_labels,
+    )
+
+    # ── Print summary ────────────────────────────────────────────────────
+    print("\n" + "="*50)
+    print("EVALUATION RESULTS")
+    print("="*50)
+    print(json.dumps(metrics, indent=2))
+
+
+if __name__ == "__main__":
+    main()

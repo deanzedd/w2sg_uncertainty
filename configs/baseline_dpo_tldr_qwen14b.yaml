@@ -1,0 +1,73 @@
+# Qwen2.5-0.5B (weak) -> Qwen2.5-14B (strong) on TL;DR, one job per H100.
+# Baseline DPO — Reddit TL;DR
+defaults:
+  - base
+
+method: baseline_dpo
+dataset_name: tldr
+labeled_ratio: 0.3
+max_prompt_length: 1024               # TL;DR Reddit posts dài, cần 1024 tokens
+max_length: 1024                      # TL;DR: paper filters samples > 1024 tokens (loader: 850 words)
+
+weak_model_name: Qwen/Qwen2.5-0.5B      # unused by baseline
+strong_model_name: Qwen/Qwen2.5-14B
+# Alternative strong models:
+#   facebook/opt-2.7b        → device_map: null (single GPU, ~5GB)
+#   facebook/opt-6.7b        → device_map: auto (multi-GPU)
+#   Qwen/Qwen2.5-1.5B        → device_map: null
+#   Qwen/Qwen2.5-3B          → device_map: null
+#   Qwen/Qwen2.5-7B          → device_map: auto (multi-GPU, needs 4×10GB)
+
+# ── Multi-GPU ──────────────────────────────────────────────────────────────
+# Change to: device_map: auto  when using Qwen2.5-7B or OPT-6.7b+
+device_map: null
+
+# ── LoRA (paper Bảng 9: r=8, alpha=16, dropout=0.05) ──────────────────────
+use_lora: true          # LoRA for strong model SFT and DPO training
+lora_r: 8               # LoRA rank per paper spec (Bảng 9)
+lora_alpha: 16          # LoRA alpha per paper spec (Bảng 9)
+lora_dropout: 0.05      # LoRA dropout per paper spec (Bảng 9)
+lora_target_modules: null  # null = PEFT auto-detects (q_proj, v_proj, etc.)
+
+# ── Strong Model SFT ────────────────────────────────────────────────────────
+sft:
+  output_dir: outputs/baseline_dpo/tldr/qwen2.5-14b/seed42/weak_labels
+  num_train_epochs: 3                   # 3 epochs per spec (Bảng 9)
+  per_device_train_batch_size: 2          # Qwen2.5-14B, 1x H100, no grad ckpt: peak 49.5 GB at 1024 tokens
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 8          # effective batch 16
+  learning_rate: 1.0e-5                 # 1e-5 per spec (Bảng 9)
+  lr_scheduler_type: cosine             # cosine per spec (Bảng 9)
+  warmup_steps: 100                     # 100 steps per spec (Bảng 9); overrides warmup_ratio
+  weight_decay: 0.05                    # 0.05 per spec (Bảng 9)
+  optim: paged_adamw_32bit              # paged adamw 32bit per spec (Bảng 9)
+  gradient_checkpointing: false        # fits on H100 without it; ~27% faster SFT
+  save_steps: 10000
+  eval_steps: 10000
+
+training:
+  output_dir: outputs/baseline_dpo/tldr/qwen2.5-14b/seed42/strong_model
+  num_train_epochs: 5
+  per_device_train_batch_size: 1      # Qwen2.5-14B, 1x H100, no grad ckpt: peak 49.5 GB at 1024 tokens
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 8      # effective batch 8
+  learning_rate: 5.0e-6
+  lr_scheduler_type: cosine
+  warmup_steps: 100
+  weight_decay: 0.05
+  optim: paged_adamw_32bit
+  beta: 0.5
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 10000
+  eval_steps: 10000
+  bf16: true
+  fp16: false
+  gradient_checkpointing: false        # fits on H100 without it; ~17% faster DPO
+
+wandb_run_name: h100-baseline-dpo-tldr-qwen14b
+
+# ── Evaluation (one L40S per job) ─────────────────────────────────────────────
+eval:
+  output_dir: outputs/baseline_dpo/tldr/qwen2.5-14b/seed42/eval
+  max_gen_samples: 500      # full TL;DR test split is 83,629 prompts; 500 per base.yaml guidance

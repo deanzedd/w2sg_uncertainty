@@ -1,0 +1,220 @@
+# =============================================================
+# Base configuration — shared defaults for all experiments
+# Override any field in experiment-specific configs
+# =============================================================
+
+# ── Reproducibility ──────────────────────────────────────────
+seed: 42
+
+# ── Model ────────────────────────────────────────────────────
+weak_model_name: facebook/opt-125m       # weak annotator (LM for WDPO, reward model for CWPO)
+strong_model_name: facebook/opt-1.3b    # strong policy to align
+sft_model_name: null                     # if null, strong_model_name is used as base for DPO
+
+# ── PEFT / LoRA ───────────────────────────────────────────────
+# LoRA policy (theo paper):
+#   weak_model_sft / weak_model_dpo / reward_model → LoRA rank = 0 (no LoRA, full fine-tune)
+#   sft (strong SFT)  / training (strong DPO)      → LoRA r=8, α=16, dropout=0.05 (Bảng 8 & 9)
+#
+# use_lora: bật/tắt LoRA toàn cục. Khi False, weak model scripts bỏ qua LoRA tự động.
+# Override use_lora=true trong experiment config khi train strong model với LoRA.
+use_lora: false          # false = default; cwpo/wdpo experiment configs set true for strong model
+lora_r: 8               # LoRA rank (Bảng 8 & 9); dùng khi use_lora=true
+lora_alpha: 16          # LoRA alpha (Bảng 8 & 9)
+lora_dropout: 0.05      # LoRA dropout (Bảng 8 & 9)
+lora_target_modules: null               # null = PEFT auto-detect (q_proj, v_proj, etc.)
+
+# ── Multi-GPU / Memory ────────────────────────────────────────
+# device_map controls how the model is distributed across GPUs:
+#   null      → single GPU (default, Trainer moves model to cuda:0)
+#   "auto"    → HuggingFace automatically shards across all GPUs by free VRAM
+#               REQUIRED for large models (7B+) on 10GB-per-card machines
+#   "balanced"→ equal sharding across all GPUs
+#
+# 4× RTX 3080 (10 GB each) guidelines:
+#   OPT-125m / 350m / 1.3b / 2.7b  → device_map: null
+#   OPT-6.7b / 13b                  → device_map: auto
+#   Qwen2.5-0.5B / 1.5B / 3B       → device_map: null
+#   Qwen2.5-7B / 14B                → device_map: auto
+#
+# NOTE: When use_lora=true, device_map is forced to "auto" automatically
+#       (PEFT requires it for multi-GPU gradient checkpointing).
+device_map: null                        # override in experiment configs for large models
+
+# gradient_checkpointing: trades compute for VRAM (~30-40% VRAM reduction)
+# Recommended when using large models or small GPU VRAM.
+gradient_checkpointing: false           # override per section (sft / training) below
+
+# ── Dataset ───────────────────────────────────────────────────
+dataset_name: hh_rlhf                   # "hh_rlhf" or "tldr"
+labeled_ratio: 0.3                      # fraction of dataset used as D_l (labeled)
+                                        # remaining (1 - labeled_ratio) becomes D_u (unlabeled)
+
+# ── Phase-1 SFT + DPO data source (MWDPO / MWDPO_BC / super_multi / 2phase) ──
+# Controls BOTH strong SFT and Phase-1 standard DPO (same path for both):
+#   d_high         — agreement-filtered subset only
+#   all_unlabeled  — full D_u with multi-weak ensemble preferences
+#                     ({label_base}/pseudo_labeled.jsonl = D_h ∪ D_l)
+# When ablating all_unlabeled, change sft/training/eval output_dir (+ wandb_run_name)
+# so you do not overwrite the d_high run. CLI --pseudo_labels still overrides.
+phase1_data_mode: d_high
+max_length: 512                         # max token length per sample
+max_prompt_length: 256                  # max prompt length
+
+# ── Weak Labeling ─────────────────────────────────────────────
+method: wdpo                            # "wdpo", "cwpo", or "baseline_dpo"
+weak_label_output_dir: outputs/weak_labels
+beta: 0.1                               # DPO KL coefficient (used in implicit reward)
+
+# ── Weak Model Training (WDPO Option A) ───────────────────────
+# For WDPO: the weak model is SFT-ed then DPO-trained on D_l
+# to create π_w^* used for implicit reward scoring.
+weak_model_sft:
+  output_dir: outputs/weak_model/sft
+  num_train_epochs: 1                   # 1 epoch for WDPO weak model SFT
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4       # effective batch = 4*4=16 per spec
+  learning_rate: 1.0e-5                # 1e-5 per spec
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  logging_steps: 50
+  save_steps: 500
+  eval_steps: 500
+  fp16: false
+  bf16: true
+  dataloader_num_workers: 4
+  gradient_checkpointing: false
+
+weak_model_dpo:
+  output_dir: outputs/weak_model/dpo
+  num_train_epochs: 1
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 5.0e-5                # 5e-5 for standard DPO per spec
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.0
+  logging_steps: 10
+  save_steps: 200
+  eval_steps: 200
+  fp16: false
+  bf16: true
+  beta: 0.1                            # standard DPO beta per spec
+  max_grad_norm: 1.0
+  gradient_checkpointing: false
+  # NOTE: weak model always trains without LoRA (use_lora forced=False in train_weak_model.py)
+  # lora_r/lora_alpha here have no effect; LoRA params are read from top-level cfg only.
+
+# ── SFT Training (Strong Model) ────────────────────────────────
+sft:
+  output_dir: outputs/sft
+  num_train_epochs: 3                   # 1 epoch for WDPO; 3 for CWPO (set in experiment config)
+  per_device_train_batch_size: 4        # 16 target (paper Bảng 9); giảm 4 cho >7B, grad_accum bù
+  per_device_eval_batch_size: 4         # 16 target (paper Bảng 9); giảm 4 cho >7B
+  gradient_accumulation_steps: 4       # 4*4=16 effective batch per spec
+  learning_rate: 1.0e-5                # 1e-5 per spec (Bảng 9)
+  lr_scheduler_type: cosine            # cosine per spec (Bảng 9)
+  warmup_steps: 100                    # 100 steps per spec (Bảng 9); overrides warmup_ratio
+  weight_decay: 0.05                   # 0.05 per spec (Bảng 9)
+  optim: paged_adamw_32bit             # paged adamw 32bit per spec (Bảng 9)
+  logging_steps: 50
+  save_steps: 500
+  eval_steps: 500
+  fp16: false
+  bf16: true
+  dataloader_num_workers: 4
+  gradient_checkpointing: true          # True per spec (Bảng 9)
+  # LoRA settings for strong SFT — read from top-level cfg when use_lora=true:
+  # lora_r: 8, lora_alpha: 16, lora_dropout: 0.05  (Bảng 9)
+
+# ── Reward Model Training (CWPO weak annotator) ───────────────
+reward_model:
+  output_dir: outputs/reward_model
+  num_train_epochs: 2
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-5
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  logging_steps: 50
+  save_steps: 500
+  fp16: false
+  bf16: true
+
+# ── Strong Model (DPO/WDPO/CWPO) Training ────────────────────
+training:
+  output_dir: outputs/strong_model
+  num_train_epochs: 5                   # up to 5; override per experiment
+  per_device_train_batch_size: 4        # 16 target; grad_accum handles OOM for >7B
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4       # effective batch=16 per spec
+  learning_rate: 5.0e-5                # 5e-5 for WDPO standard DPO; 5e-6 for CWPO (set in exp cfg)
+  lr_scheduler_type: cosine            # cosine per spec (Bảng 8)
+  warmup_steps: 100                    # 100 steps per spec (Bảng 8); overrides warmup_ratio
+  weight_decay: 0.05                   # 0.05 per spec (Bảng 8)
+  optim: paged_adamw_32bit             # paged adamw 32bit per spec (Bảng 8)
+  logging_steps: 10
+  save_steps: 200
+  eval_steps: 200
+  fp16: false
+  bf16: true
+  dataloader_num_workers: 4
+  beta: 0.1                             # DPO beta (KL penalty); 0.5 for CWPO (set in exp cfg)
+  max_grad_norm: 1.0
+  gradient_checkpointing: true          # True per spec (Bảng 8)
+  # LoRA settings for strong DPO — read from top-level cfg when use_lora=true:
+  # lora_r: 8, lora_alpha: 16, lora_dropout: 0.05  (Bảng 8)
+
+# ── Evaluation ────────────────────────────────────────────────
+eval:
+  # GRA reward model — null = auto-select theo dataset (khuyến nghị, theo paper):
+  #   hh_rlhf / ufb → Skywork/Skywork-Reward-V2-Llama-3.1-8B
+  #   tldr          → OpenAssistant/reward-model-deberta-v3-large-v2
+  # Override thủ công nếu muốn dùng model cụ thể, ví dụ:
+  #   reward_model_name: "Skywork/Skywork-Reward-V2-Qwen3-1.7B"
+  reward_model_name: null
+
+  # device_map cho GRA reward model:
+  #   "auto" = phân bổ tự động qua nhiều GPU (cần thiết cho Skywork-8B ~16GB)
+  #   null   = load trên single GPU (chỉ dùng khi reward model nhỏ như DeBERTa)
+  gra_device_map: auto
+
+  # Batch size cho GRA inference:
+  #   Skywork-8B: tự động ép xuống 1 nếu dùng default (8)
+  #   DeBERTa: 8 là hợp lý
+  gra_batch_size: 8
+
+  gpt4_model: gpt-4o
+  gpt4_max_samples: 500                 # limit GPT-4 eval samples (cost)
+  output_dir: outputs/eval
+
+  # Giới hạn số samples dùng để generate responses (aligned + SFT)
+  # 500 là hợp lý và đủ độ tin cậy thống kê cho GRA metric
+  # Đặt null để dùng toàn bộ test set (có thể mất vài giờ với 1000+ samples)
+  max_gen_samples: null
+
+  # Batch size khi generate responses (aligned + SFT models)
+  # Tăng lên nếu VRAM còn dư sau khi load 2 model, giảm xuống 1 nếu OOM
+  gen_batch_size: 16 #4
+
+  # ── Generation hyperparameters (paper spec) ──────────────────────────
+  # Theo paper: temperature=0.95 (sampling), max_new_tokens=512
+  # Đặt gen_do_sample: false để dùng greedy decoding (không khuyến nghị)
+  gen_max_new_tokens: 512    # paper spec: 512
+  gen_temperature: 0.95      # paper spec: 0.95
+  gen_do_sample: true        # paper spec: sampling (không phải greedy)
+  gen_top_p: 1.0             # paper spec: không dùng nucleus sampling
+
+# ── Logging ───────────────────────────────────────────────────
+wandb_project: w2sg_uncertainty
+wandb_run_name: null                    # null = auto-generated
+use_wandb: true # true
+
+# ── Paths ─────────────────────────────────────────────────────
+cache_dir: .cache                       # HuggingFace cache
+output_root: outputs
