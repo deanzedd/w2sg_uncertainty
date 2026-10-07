@@ -11,3 +11,4 @@ scipy>=1.11.0
 openai>=1.0.0
 tqdm>=4.66.0
 rich>=13.0.0
+bitsandbytes>=0.43.0
