@@ -74,6 +74,11 @@ class MultiHeadRewardTrainer:
         self.use_bootstrap = use_bootstrap
         self.freeze_backbone = freeze_backbone
         self.use_bf16 = bool(self.cfg.get("bf16", True)) and str(device).startswith("cuda")
+        if self.cfg.get("gradient_checkpointing", False):
+            # Same loss and updates, less activation memory (batch 32 x 512 tokens on a 0.5B backbone).
+            self.model.backbone.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
 
     def _autocast(self):
         # Weights stay fp32 and only the forward pass runs in bf16: with pure-bf16 weights, AdamW

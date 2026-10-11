@@ -227,10 +227,14 @@ def resolve_phase1_train_labels(
         path = os.path.join(label_base_dir, "d_high", "pseudo_labeled.jsonl")
     elif mode == "all_unlabeled":
         path = os.path.join(label_base_dir, "pseudo_labeled.jsonl")
+    elif mode in ("random_subset", "conf_only"):
+        # Selection controls of size |D_h| (ablation): random pairs / top-confidence pairs.
+        from src.utils.ablation_subsets import build_subset
+        path = build_subset(label_base_dir, mode, seed=int(cfg.get("seed", 42)))
     else:
         raise ValueError(
             f"Unknown phase1_data_mode={mode!r}. "
-            "Choose 'd_high' or 'all_unlabeled'."
+            "Choose 'd_high', 'all_unlabeled', 'random_subset' or 'conf_only'."
         )
 
     logger.info(f"[phase1_data_mode={mode}] Phase-1 {stage or 'SFT/DPO'} labels: {path}")
