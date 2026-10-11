@@ -198,6 +198,7 @@ def resolve_phase1_train_labels(
     cfg,
     label_base_dir: str,
     cli_pseudo_labels: str | None = None,
+    stage: str | None = None,
 ) -> str:
     """
     Resolve Phase-1 SFT + DPO --pseudo_labels path from phase1_data_mode.
@@ -208,7 +209,9 @@ def resolve_phase1_train_labels(
       3. phase1_data_mode=all_unlabeled  → {label_base}/pseudo_labeled.jsonl
          (full D_u with multi-weak ensemble preferences; already written at labeling time)
 
-    Both SFT and Phase-1 DPO must use the same resolved path.
+    SFT and Phase-1 DPO use the same resolved path unless `stage` ("sft" or "dpo") is given and
+    the config sets `sft_data_mode` / `dpo_data_mode`, which override phase1_data_mode for that
+    stage only (2x2 data-filtering ablation).
     """
     if cli_pseudo_labels:
         logger.info(
@@ -216,7 +219,10 @@ def resolve_phase1_train_labels(
         )
         return cli_pseudo_labels
 
-    mode = str(cfg.get("phase1_data_mode", "d_high"))
+    mode = str(
+        (cfg.get(f"{stage}_data_mode") if stage else None)
+        or cfg.get("phase1_data_mode", "d_high")
+    )
     if mode == "d_high":
         path = os.path.join(label_base_dir, "d_high", "pseudo_labeled.jsonl")
     elif mode == "all_unlabeled":
@@ -227,7 +233,7 @@ def resolve_phase1_train_labels(
             "Choose 'd_high' or 'all_unlabeled'."
         )
 
-    logger.info(f"[phase1_data_mode={mode}] Phase-1 SFT/DPO labels: {path}")
+    logger.info(f"[phase1_data_mode={mode}] Phase-1 {stage or 'SFT/DPO'} labels: {path}")
     return path
 
 
@@ -642,9 +648,13 @@ def main():
                     "outputs/mwdpo_bootstrap_calibration/weak_labels"),
         )
 
-        # Phase-1 SFT + DPO train labels (d_high | all_unlabeled)
+        # Phase-1 SFT + DPO train labels (d_high | all_unlabeled). sft_data_mode / dpo_data_mode
+        # may differ (2x2 ablation); phase1_labels_path is the DPO set (also passed to evaluation).
+        sft_labels_path = resolve_phase1_train_labels(
+            cfg, label_base_dir, args.pseudo_labels, stage="sft"
+        )
         phase1_labels_path = resolve_phase1_train_labels(
-            cfg, label_base_dir, args.pseudo_labels
+            cfg, label_base_dir, args.pseudo_labels, stage="dpo"
         )
 
         # ══ Phase 1a: Train MultiHeadRewardModel on D_l ══════════════════
@@ -699,7 +709,7 @@ def main():
             logger.info("═" * 60)
             logger.info(
                 f"PHASE 2a: MWDPO_BC — SFT Strong Model "
-                f"(phase1_data_mode={cfg.get('phase1_data_mode', 'd_high')}) → π_θ^SFT"
+                f"(labels={sft_labels_path}) → π_θ^SFT"
             )
             logger.info("═" * 60)
             sft_resume_args = (
@@ -709,7 +719,7 @@ def main():
             run_script(
                 "train_sft.py",
                 "--config", args.config,
-                "--pseudo_labels", phase1_labels_path,
+                "--pseudo_labels", sft_labels_path,
                 *sft_resume_args, *debug_flag, *args.overrides,
             )
         else:
@@ -719,7 +729,7 @@ def main():
         logger.info("═" * 60)
         logger.info(
             f"PHASE 2b: MWDPO_BC — Standard DPO "
-            f"(phase1_data_mode={cfg.get('phase1_data_mode', 'd_high')})"
+            f"(labels={phase1_labels_path})"
         )
         logger.info("═" * 60)
         extra_args = [
