@@ -1,5 +1,5 @@
 # Confidence-only selection on HH-RLHF, Qwen2.5-0.5B (3-head ensemble) -> Qwen2.5-7B: SFT + DPO on the |D_h| most confident pairs, ignoring head agreement.
-# Weak stage is shared with mwdpo_bc_hh_rlhf_qwen1.5b.yaml: run with --skip_reward_model --skip_labeling. Micro-batches sized for one 32 GB GPU.
+# Weak stage is shared with mwdpo_bc_hh_rlhf_qwen1.5b.yaml: run with --skip_reward_model --skip_labeling. Micro-batches chosen by benchmark for one RTX 5090 (practical ceiling ~23 GB under WSL).
 #
 # Extends MWDPO Phase 1 with:
 #   1a: Multi-head bootstrap ensemble (shared backbone, K scalar heads,
@@ -125,9 +125,9 @@ reward_model:
 sft:
   output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/qwen2.5-7b_abl_conf_only/seed42/sft_strong
   num_train_epochs: 3
-  per_device_train_batch_size: 1
+  per_device_train_batch_size: 4          # benchmarked on the 5090: 1.18 s per effective batch, 18.9 GB
   per_device_eval_batch_size: 1
-  gradient_accumulation_steps: 16
+  gradient_accumulation_steps: 4
   learning_rate: 1.0e-5
   lr_scheduler_type: cosine
   warmup_steps: 100
@@ -141,9 +141,9 @@ sft:
 training:
   output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/qwen2.5-7b_abl_conf_only/seed42/strong_model
   num_train_epochs: 5
-  per_device_train_batch_size: 1
+  per_device_train_batch_size: 2          # benchmarked on the 5090: 1.41 s per effective batch, 18.5 GB
   per_device_eval_batch_size: 1
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 4
   learning_rate: 5.0e-6
   lr_scheduler_type: cosine
   warmup_steps: 100
@@ -160,7 +160,7 @@ training:
 
 eval:
   max_gen_samples: 500      # same 500 test prompts as every other run
-  gen_batch_size: 4
+  gen_batch_size: 16
   output_dir: outputs/mwdpo_1phase_threshold0.8_linear_boots/hh_rlhf/qwen2.5-7b_abl_conf_only/seed42/eval
 
 wandb_run_name: h100_mwdpo_bc-hh_rlhf-qwen2.5-7b-abl-conf-only
