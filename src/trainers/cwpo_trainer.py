@@ -87,6 +87,46 @@ class SafeCheckpointMixin:
                 f"to {output_dir} (global_step={self.state.global_step})"
             )
 
+    def _load_from_checkpoint(self, resume_from_checkpoint, model=None):
+        """Resume LoRA DPO from a checkpoint and make sure the trained adapter is really restored.
+
+        TRL adds a second adapter ("ref") next to the trainable "default" one, so PEFT saves a checkpoint as
+        `adapter_model.safetensors` (default, in the root) plus a `ref/` sub-folder. With several adapters,
+        transformers 5.17 `_load_from_checkpoint` only loads the sub-folder adapters and silently skips the
+        trained root adapter: training then restarts from a fresh adapter while the step counter and the LR
+        schedule continue. Load the root adapter explicitly and verify it, failing loudly on any mismatch.
+        """
+        super()._load_from_checkpoint(resume_from_checkpoint, model)
+        model = self.model if model is None else model
+        weights_path = os.path.join(resume_from_checkpoint, "adapter_model.safetensors")
+        if not (hasattr(model, "peft_config") and os.path.isfile(weights_path)):
+            return
+        from peft import set_peft_model_state_dict
+        from safetensors.torch import load_file
+
+        active = model.active_adapters[0] if getattr(model, "active_adapters", None) else "default"
+        saved = load_file(weights_path)
+        set_peft_model_state_dict(model, saved, adapter_name=active)
+
+        params = dict(model.named_parameters())
+        worst, checked = 0.0, 0
+        for key, value in saved.items():
+            name = key.replace(".lora_A.weight", f".lora_A.{active}.weight").replace(
+                ".lora_B.weight", f".lora_B.{active}.weight")
+            if name not in params:
+                raise RuntimeError(f"Resume check failed: adapter tensor {name} is missing from the model")
+            worst = max(worst, float((params[name].detach().float().cpu() - value.float()).abs().max()))
+            checked += 1
+        if checked == 0 or worst > 1e-3:
+            raise RuntimeError(
+                f"Resume check failed: adapter '{active}' differs from {weights_path} "
+                f"(max |diff| = {worst:.3e} over {checked} tensors)"
+            )
+        logger.info(
+            f"[SafeCheckpointMixin] Restored adapter '{active}' from {resume_from_checkpoint} "
+            f"({checked} tensors, max |diff| = {worst:.1e})"
+        )
+
 
 class CWPOTrainer(SafeCheckpointMixin, DPOTrainer):
     """
